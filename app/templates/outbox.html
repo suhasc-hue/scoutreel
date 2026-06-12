@@ -6,8 +6,16 @@
 <div class="toolbar">
   <h1 style="margin:0">Outbox</h1>
   <span class="count" title="sent today / daily cap">{{ sent_today }}/{{ cap }} today</span>
+  {% set approved = drafts | selectattr('status', 'equalto', 'approved') | list %}
+  {% if approved %}
+  <form class="inline" method="post" action="/outbox/send-approved" style="margin-left:auto"
+        onsubmit="return confirm('Send all {{ approved|length }} approved emails from your Gmail (3-minute spacing, daily cap enforced)?')">
+    <button class="primary">📤 Send all approved ({{ approved|length }})</button>
+  </form>
+  {% endif %}
 </div>
 {% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if request.query_params.get('info') %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ request.query_params.get('info') }}</div>{% endif %}
 
 {% if drafts %}
   {% for e in drafts %}

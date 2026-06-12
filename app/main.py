@@ -36,6 +36,7 @@ from app.models import (
     SeedQuery,
 )
 from app.outreach.drafts import (
+    DEFAULT_BULK_TEMPLATE,
     DEFAULT_SUBJECT,
     DEFAULT_TEMPLATE,
     get_setting,
@@ -153,6 +154,10 @@ def _row(
     contact_count: int,
     population: list[float] | None = None,
 ) -> dict:
+    from app.crm import STAR_LABELS, stars_for_match, stars_string
+
+    match = _match_pct(score.total_score if score else None, population or [])
+    stars = stars_for_match(match)
     return {
         "film": film,
         "score": score,
@@ -160,7 +165,10 @@ def _row(
         "sparkline": sparkline_points(stats),
         "views": stats[-1].views if stats else 0,
         "contact_count": contact_count,
-        "match": _match_pct(score.total_score if score else None, population or []),
+        "match": match,
+        "stars": stars,
+        "stars_str": stars_string(stars),
+        "stars_label": STAR_LABELS[stars],
     }
 
 
@@ -294,7 +302,10 @@ def films_page(
         # ---- netflix-style home: billboard + curated rows ----
         from app.enrich import REGIONS
 
-        quality_floor = 2.0
+        try:
+            quality_floor = float(get_setting(db, "quality_floor", "2"))
+        except ValueError:
+            quality_floor = 2.0
         active = base.filter(
             Film.status.in_(("new", "shortlisted")),
             Film.quality_score >= quality_floor,
@@ -585,6 +596,10 @@ def set_film_status(
     if film is None:
         raise HTTPException(404)
     film.status = status
+    if status == "shortlisted" and film.channel:
+        from app.crm import auto_advance
+
+        auto_advance(film.channel, "shortlisted")
     db.commit()
     if request.headers.get("hx-request"):
         return templates.TemplateResponse(
@@ -800,52 +815,126 @@ def approve_draft(email_id: int, db: Session = Depends(get_db)):
     return RedirectResponse("/outbox", status_code=303)
 
 
+def _perform_send(db: Session, email_id: int, interactive: bool = True) -> str | None:
+    """Claim + guardrails + Gmail send + CRM advance. Returns an error message
+    or None on success. Caller must hold _send_lock."""
+    claimed = db.execute(
+        update(OutreachEmail)
+        .where(OutreachEmail.id == email_id, OutreachEmail.status == "approved")
+        .values(status="sending", claimed_at=datetime.now(timezone.utc))
+    ).rowcount
+    db.commit()
+    if not claimed:
+        return "Not sendable — already sent, in flight, or not approved."
+    email_obj = db.get(OutreachEmail, email_id)
+
+    def _revert() -> None:
+        email_obj.status = "approved"
+        email_obj.claimed_at = None
+        db.commit()
+
+    try:
+        assert_can_send(db, email_obj)
+    except GuardrailViolation as exc:
+        _revert()
+        logger.error("GUARDRAIL BLOCKED send #{}: {}", email_id, exc)
+        return f"Blocked: {exc}"
+
+    from app.outreach.gmail_client import GmailClient
+
+    try:
+        client = GmailClient(interactive=interactive)
+        result = client.send_email(
+            to=email_obj.contact.email, subject=email_obj.subject, body=email_obj.body
+        )
+    except Exception as exc:  # noqa: BLE001
+        _revert()
+        logger.error("Gmail send failed for #{}: {}", email_id, exc)
+        return f"Gmail send failed: {exc}"
+
+    from app.crm import auto_advance
+
+    email_obj.status = "sent"
+    email_obj.sent_at = datetime.now(timezone.utc)
+    email_obj.gmail_thread_id = result.thread_id
+    if email_obj.film:
+        email_obj.film.status = "contacted"
+    if email_obj.contact and email_obj.contact.channel:
+        channel = email_obj.contact.channel
+        auto_advance(channel, "contacted")
+        channel.last_contacted_at = datetime.now(timezone.utc)
+    db.commit()
+    logger.info("sent outreach #{} to {}", email_id, email_obj.contact.email)
+    return None
+
+
 @app.post("/outreach/{email_id}/send")
 def send_email(email_id: int, db: Session = Depends(get_db)):
     with _send_lock:
-        # Atomic claim: only one request can flip approved -> sending.
-        claimed = db.execute(
-            update(OutreachEmail)
-            .where(OutreachEmail.id == email_id, OutreachEmail.status == "approved")
-            .values(status="sending", claimed_at=datetime.now(timezone.utc))
-        ).rowcount
-        db.commit()
-        if not claimed:
-            return _err("/outbox", "Not sendable — already sent, in flight, or not approved.")
-        email_obj = db.get(OutreachEmail, email_id)
-
-        def _revert() -> None:
-            email_obj.status = "approved"
-            email_obj.claimed_at = None
-            db.commit()
-
-        try:
-            assert_can_send(db, email_obj)
-        except GuardrailViolation as exc:
-            _revert()
-            logger.error("GUARDRAIL BLOCKED send #{}: {}", email_id, exc)
-            return _err("/outbox", f"Blocked: {exc}")
-
-        from app.outreach.gmail_client import GmailClient
-
-        try:
-            client = GmailClient()
-            result = client.send_email(
-                to=email_obj.contact.email, subject=email_obj.subject, body=email_obj.body
-            )
-        except Exception as exc:  # noqa: BLE001
-            _revert()
-            logger.error("Gmail send failed for #{}: {}", email_id, exc)
-            return _err("/outbox", f"Gmail send failed: {exc}")
-
-        email_obj.status = "sent"
-        email_obj.sent_at = datetime.now(timezone.utc)
-        email_obj.gmail_thread_id = result.thread_id
-        if email_obj.film:
-            email_obj.film.status = "contacted"
-        db.commit()
-    logger.info("sent outreach #{} to {}", email_id, email_obj.contact.email)
+        error = _perform_send(db, email_id)
+    if error:
+        return _err("/outbox", error)
     return RedirectResponse("/outbox", status_code=303)
+
+
+# ---- queued bulk sending: user approves in the dashboard, the queue sends
+# everything approved while honouring the 3-minute spacing + daily cap. ----
+
+_queue_state = {"running": False, "remaining": 0, "sent": 0, "last_error": ""}
+
+
+def _send_queue_worker() -> None:
+    import time as _time
+
+    from app.outreach.guardrails import MIN_SPACING, last_send_at
+
+    try:
+        while True:
+            with session_scope() as db:
+                next_email = (
+                    db.query(OutreachEmail)
+                    .filter(OutreachEmail.status == "approved")
+                    .order_by(OutreachEmail.created_at)
+                    .first()
+                )
+                if next_email is None:
+                    break
+                _queue_state["remaining"] = (
+                    db.query(OutreachEmail).filter(OutreachEmail.status == "approved").count()
+                )
+                last = last_send_at(db)
+                email_id = next_email.id
+            if last is not None:
+                last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+                wait = (last + MIN_SPACING - datetime.now(timezone.utc)).total_seconds()
+                if wait > 0:
+                    _time.sleep(min(wait + 1, 200))
+            with _send_lock:
+                with session_scope() as db:
+                    error = _perform_send(db, email_id, interactive=False)
+            if error:
+                _queue_state["last_error"] = error
+                if "cap" in error or "Gmail" in error:
+                    logger.warning("send queue stopped: {}", error)
+                    break  # daily cap or auth problem — stop, don't spin
+            else:
+                _queue_state["sent"] += 1
+    finally:
+        _queue_state["running"] = False
+        logger.info("send queue finished: {} sent", _queue_state["sent"])
+
+
+@app.post("/outbox/send-approved")
+def send_all_approved(db: Session = Depends(get_db)):
+    pending = db.query(OutreachEmail).filter(OutreachEmail.status == "approved").count()
+    if not pending:
+        return _err("/outbox", "Nothing approved to send.")
+    if _queue_state["running"]:
+        return _info("/outbox", f"Queue already running ({_queue_state['remaining']} left).")
+    _queue_state.update(running=True, remaining=pending, sent=0, last_error="")
+    threading.Thread(target=_send_queue_worker, daemon=True).start()
+    return _info("/outbox", f"Sending {pending} approved emails with 3-minute spacing — "
+                            "you can leave this page.")
 
 
 @app.post("/outreach/{email_id}/delete")
@@ -860,12 +949,353 @@ def delete_draft(email_id: int, db: Session = Depends(get_db)):
     return RedirectResponse("/outbox", status_code=303)
 
 
+# ---------- filmmaker pipeline (CRM) ----------
+
+def _channel_card(db: Session, channel: Channel, vms_by_channel: dict) -> dict:
+    films = [f for f in channel.films if f.status != "rejected"] or list(channel.films)
+    best = vms_by_channel.get(channel.id)
+    contact = next((c for c in channel.contacts), None)
+    return {
+        "channel": channel,
+        "film_count": len(films),
+        "best": best,
+        "contact": contact,
+        "contact_count": len(channel.contacts),
+        "tags": [t.strip() for t in (channel.tags or "").split(",") if t.strip()],
+    }
+
+
+def _best_film_vms(db: Session, channels: list[Channel]) -> dict[int, dict]:
+    """Highest-scored (else most-viewed) film per channel, as a view model."""
+    ids = [c.id for c in channels]
+    if not ids:
+        return {}
+    films = (
+        db.query(Film)
+        .options(joinedload(Film.channel))
+        .filter(Film.channel_id.in_(ids), Film.status != "rejected")
+        .all()
+    )
+    vms = _build_view_models(db, films)
+    best: dict[int, dict] = {}
+    for f in films:
+        vm = vms[f.id]
+        cur = best.get(f.channel_id)
+        key = (vm["score"].total_score if vm["score"] else -1, vm["views"])
+        cur_key = (-2, -1) if cur is None else (
+            cur["score"].total_score if cur["score"] else -1, cur["views"])
+        if cur is None or key > cur_key:
+            best[f.channel_id] = vm
+    return best
+
+
+@app.get("/filmmakers", response_class=HTMLResponse)
+def filmmakers_page(
+    request: Request,
+    stage: str = "shortlisted",
+    q: str = "",
+    sort: str = "recent",
+    db: Session = Depends(get_db),
+):
+    from app.crm import PIPELINE_STAGES, STAGE_COLORS, STAGE_LABELS
+
+    counts = dict(
+        db.query(Channel.pipeline_stage, func.count(Channel.id))
+        .group_by(Channel.pipeline_stage)
+        .all()
+    )
+    query = db.query(Channel)
+    if stage != "all":
+        query = query.filter(Channel.pipeline_stage == stage)
+    if q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            Channel.name.ilike(like) | Channel.notes.ilike(like) | Channel.tags.ilike(like)
+        )
+    if sort == "name":
+        query = query.order_by(Channel.name.asc())
+    elif sort == "subs":
+        query = query.order_by(Channel.subscriber_count.desc())
+    elif sort == "priority":
+        query = query.order_by(Channel.priority.desc(), Channel.stage_changed_at.desc())
+    elif sort == "followup":
+        query = query.order_by(Channel.followup_at.asc().nullslast())
+    else:  # recent
+        query = query.order_by(Channel.stage_changed_at.desc().nullslast(), Channel.id.desc())
+    channels = query.limit(120).all()
+    best = _best_film_vms(db, channels)
+    rows = [_channel_card(db, c, best) for c in channels]
+    return templates.TemplateResponse(
+        request,
+        "filmmakers.html",
+        {
+            "rows": rows, "stage": stage, "q": q, "sort": sort,
+            "counts": counts, "stages": PIPELINE_STAGES,
+            "stage_labels": STAGE_LABELS, "stage_colors": STAGE_COLORS,
+            "error": request.query_params.get("error", ""),
+            "info": request.query_params.get("info", ""),
+        },
+    )
+
+
+@app.get("/filmmaker/{channel_id}", response_class=HTMLResponse)
+def filmmaker_detail(channel_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.crm import PIPELINE_STAGES, STAGE_COLORS, STAGE_LABELS
+    from app.enrich import COUNTRY_NAMES, region_of
+    from app.models import ContactLead
+
+    channel = db.get(Channel, channel_id)
+    if channel is None:
+        raise HTTPException(404)
+    films = (
+        db.query(Film)
+        .options(joinedload(Film.channel))
+        .filter(Film.channel_id == channel_id)
+        .all()
+    )
+    vms = list(_build_view_models(db, films).values())
+    vms.sort(key=lambda r: (r["score"].total_score if r["score"] else -1, r["views"]), reverse=True)
+    contact_rows = [
+        {"contact": c, "dnc": is_do_not_contact(db, c.email)} for c in channel.contacts
+    ]
+    emails = (
+        db.query(OutreachEmail)
+        .join(Contact, OutreachEmail.contact_id == Contact.id)
+        .filter(Contact.channel_id == channel_id)
+        .order_by(OutreachEmail.created_at.desc())
+        .all()
+    )
+    leads = db.query(ContactLead).filter_by(channel_id=channel_id).limit(5).all()
+    return templates.TemplateResponse(
+        request,
+        "filmmaker_detail.html",
+        {
+            "c": channel, "films": vms, "contacts": contact_rows, "emails": emails,
+            "leads": leads, "stages": PIPELINE_STAGES, "stage_labels": STAGE_LABELS,
+            "stage_colors": STAGE_COLORS,
+            "country_name": COUNTRY_NAMES.get((channel.country or "").upper()),
+            "region": region_of(channel.country),
+            "crawling": channel_id in _crawls_running,
+            "tags": [t.strip() for t in (channel.tags or "").split(",") if t.strip()],
+            "error": request.query_params.get("error", ""),
+            "info": request.query_params.get("info", ""),
+        },
+    )
+
+
+@app.post("/filmmakers/{channel_id}/stage")
+def set_filmmaker_stage(
+    channel_id: int,
+    request: Request,
+    stage: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    from app.crm import set_stage
+
+    channel = db.get(Channel, channel_id)
+    if channel is None:
+        raise HTTPException(404)
+    if not set_stage(channel, stage):
+        return _err(request.headers.get("referer") or "/filmmakers", "Unknown stage.")
+    db.commit()
+    return RedirectResponse(request.headers.get("referer") or "/filmmakers", status_code=303)
+
+
+@app.post("/filmmakers/{channel_id}/notes")
+def save_filmmaker_notes(
+    channel_id: int,
+    request: Request,
+    notes: str = Form(""),
+    tags: str = Form(""),
+    priority: int = Form(0),
+    followup_at: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    channel = db.get(Channel, channel_id)
+    if channel is None:
+        raise HTTPException(404)
+    channel.notes = notes.strip()
+    channel.tags = ",".join(t.strip() for t in tags.split(",") if t.strip())[:250]
+    channel.priority = min(max(priority, 0), 3)
+    if followup_at:
+        try:
+            channel.followup_at = datetime.strptime(followup_at, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
+    else:
+        channel.followup_at = None
+    db.commit()
+    return RedirectResponse(
+        request.headers.get("referer") or f"/filmmaker/{channel_id}", status_code=303
+    )
+
+
+@app.post("/filmmakers/bulk-draft")
+async def bulk_draft(request: Request, db: Session = Depends(get_db)):
+    """Create approvable outreach drafts for every selected filmmaker using
+    the bulk template. Each draft still passes guardrails at send time."""
+    form = await request.form()
+    ids = [int(v) for v in form.getlist("channel_id")]
+    if not ids:
+        return _err("/filmmakers", "No filmmakers selected.")
+    best = _best_film_vms(db, db.query(Channel).filter(Channel.id.in_(ids)).all())
+    created, skipped = 0, []
+    for channel_id in ids:
+        channel = db.get(Channel, channel_id)
+        if channel is None:
+            continue
+        contact = next(
+            (c for c in channel.contacts
+             if not is_do_not_contact(db, c.email) and c.confidence == "listed_business"),
+            None,
+        ) or next((c for c in channel.contacts if not is_do_not_contact(db, c.email)), None)
+        vm = best.get(channel_id)
+        if contact is None or vm is None:
+            skipped.append(channel.name or f"#{channel_id}")
+            continue
+        if contact.confidence == "inferred":
+            skipped.append(f"{channel.name} (inferred contact — draft individually)")
+            continue
+        film = vm["film"]
+        already = (
+            db.query(OutreachEmail)
+            .filter(OutreachEmail.contact_id == contact.id, OutreachEmail.film_id == film.id,
+                    OutreachEmail.status.in_(("draft", "approved", "sending", "sent", "replied")))
+            .count()
+        )
+        if already:
+            skipped.append(f"{channel.name} (already drafted)")
+            continue
+        subject, body = render_draft(db, film, contact, bulk=True)
+        db.add(OutreachEmail(contact_id=contact.id, film_id=film.id,
+                             subject=subject, body=body, status="draft"))
+        created += 1
+    db.commit()
+    msg = f"Created {created} drafts — review and approve them in the Outbox."
+    if skipped:
+        msg += f" Skipped {len(skipped)}: {', '.join(skipped[:5])}" + ("…" if len(skipped) > 5 else "")
+    return _info("/outbox", msg)
+
+
+@app.get("/filmmakers/export")
+def export_filmmakers(stage: str = "shortlisted", db: Session = Depends(get_db)):
+    import csv
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    query = db.query(Channel)
+    if stage != "all":
+        query = query.filter(Channel.pipeline_stage == stage)
+    channels = query.order_by(Channel.name).all()
+    best = _best_film_vms(db, channels)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["name", "stage", "priority", "country", "subscribers", "emails",
+                "best_film", "stars", "match_pct", "last_contacted", "followup",
+                "tags", "notes", "channel_url"])
+    for c in channels:
+        vm = best.get(c.id)
+        w.writerow([
+            c.name, c.pipeline_stage, c.priority, c.country or "",
+            c.subscriber_count, "; ".join(x.email for x in c.contacts),
+            vm["film"].title if vm else "", vm["stars"] if vm else "",
+            vm["match"] if vm else "",
+            c.last_contacted_at.strftime("%Y-%m-%d") if c.last_contacted_at else "",
+            c.followup_at.strftime("%Y-%m-%d") if c.followup_at else "",
+            c.tags or "", (c.notes or "").replace("\n", " "), c.url,
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=filmmakers-{stage}.csv"},
+    )
+
+
+# ---------- inbox ----------
+
+@app.get("/inbox", response_class=HTMLResponse)
+def inbox(request: Request, db: Session = Depends(get_db)):
+    convos = (
+        db.query(OutreachEmail)
+        .options(joinedload(OutreachEmail.contact).joinedload(Contact.channel),
+                 joinedload(OutreachEmail.film))
+        .filter(OutreachEmail.status.in_(("sent", "replied", "opted_out", "bounced")))
+        .order_by(OutreachEmail.unread.desc(),
+                  func.coalesce(OutreachEmail.last_reply_at, OutreachEmail.sent_at).desc())
+        .all()
+    )
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = []
+    for e in convos:
+        sent_at = e.sent_at.replace(tzinfo=None) if e.sent_at and e.sent_at.tzinfo else e.sent_at
+        followup_due = (
+            e.status == "sent" and sent_at is not None and (now - sent_at).days >= 7
+        )
+        rows.append({"e": e, "followup_due": followup_due})
+    unread = sum(1 for e in convos if e.unread)
+    return templates.TemplateResponse(
+        request, "inbox.html",
+        {"rows": rows, "unread": unread,
+         "error": request.query_params.get("error", ""),
+         "info": request.query_params.get("info", "")},
+    )
+
+
+@app.post("/inbox/{email_id}/read")
+def mark_read(email_id: int, db: Session = Depends(get_db)):
+    e = db.get(OutreachEmail, email_id)
+    if e:
+        e.unread = False
+        db.commit()
+    return RedirectResponse("/inbox", status_code=303)
+
+
+# ---------- dashboard ----------
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, db: Session = Depends(get_db)):
+    from app.crm import PIPELINE_STAGES, STAGE_COLORS, STAGE_LABELS
+
+    stage_counts = dict(
+        db.query(Channel.pipeline_stage, func.count(Channel.id))
+        .group_by(Channel.pipeline_stage).all()
+    )
+    films_total = db.query(Film).count()
+    films_active = db.query(Film).filter(Film.status.in_(("new", "shortlisted"))).count()
+    sent = db.query(OutreachEmail).filter(OutreachEmail.sent_at.isnot(None)).count()
+    replied = db.query(OutreachEmail).filter(
+        OutreachEmail.status.in_(("replied", "opted_out"))).count()
+    unread = db.query(OutreachEmail).filter(OutreachEmail.unread.is_(True)).count()
+    now = datetime.now(timezone.utc)
+    followups_due = db.query(Channel).filter(
+        Channel.followup_at.isnot(None), Channel.followup_at <= now).count()
+    response_rate = round(replied / sent * 100) if sent else 0
+    funnel = [(s, STAGE_LABELS[s], stage_counts.get(s, 0), STAGE_COLORS[s])
+              for s in PIPELINE_STAGES]
+    max_funnel = max((n for _, _, n, _ in funnel), default=1) or 1
+    return templates.TemplateResponse(
+        request, "dashboard.html",
+        {"funnel": funnel, "max_funnel": max_funnel,
+         "films_total": films_total, "films_active": films_active,
+         "filmmakers_total": sum(stage_counts.values()),
+         "sent": sent, "replied": replied, "unread": unread,
+         "followups_due": followups_due, "response_rate": response_rate,
+         "collaborating": stage_counts.get("collaborating", 0)},
+    )
+
+
 # ---------- settings ----------
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)):
+    from app.models import SeedChannel
+
     s = get_settings()
     queries = db.query(SeedQuery).order_by(SeedQuery.added_at).all()
+    seed_channels = db.query(SeedChannel).order_by(SeedChannel.added_at).all()
     dnc = db.query(DoNotContact).order_by(DoNotContact.added_at.desc()).all()
     values = {
         "daily_send_cap": get_setting(db, "daily_send_cap", str(s.daily_send_cap)),
@@ -873,6 +1303,9 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "user_pitch": get_setting(db, "user_pitch", s.user_pitch),
         "email_subject_template": get_setting(db, "email_subject_template", DEFAULT_SUBJECT),
         "email_body_template": get_setting(db, "email_body_template", DEFAULT_TEMPLATE),
+        "bulk_body_template": get_setting(db, "bulk_body_template", DEFAULT_BULK_TEMPLATE),
+        "quality_floor": get_setting(db, "quality_floor", "2"),
+        "harvest_pages_per_channel": get_setting(db, "harvest_pages_per_channel", "2"),
         "score_velocity_weight": get_setting(db, "score_velocity_weight", str(s.score_velocity_weight)),
         "score_engagement_weight": get_setting(db, "score_engagement_weight", str(s.score_engagement_weight)),
         "score_recency_weight": get_setting(db, "score_recency_weight", str(s.score_recency_weight)),
@@ -882,9 +1315,42 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {"queries": queries, "dnc": dnc, "v": values,
+        {"queries": queries, "seed_channels": seed_channels, "dnc": dnc, "v": values,
          "hard_max": 30, "error": request.query_params.get("error", "")},
     )
+
+
+@app.post("/settings/channels/add")
+def add_seed_channel(handle: str = Form(...), label: str = Form(""), db: Session = Depends(get_db)):
+    from app.models import SeedChannel
+
+    handle = handle.strip()
+    if handle and not db.query(SeedChannel).filter_by(handle=handle).one_or_none():
+        db.add(SeedChannel(handle=handle, label=label.strip() or handle))
+        db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/channels/{seed_id}/toggle")
+def toggle_seed_channel(seed_id: int, db: Session = Depends(get_db)):
+    from app.models import SeedChannel
+
+    s = db.get(SeedChannel, seed_id)
+    if s:
+        s.enabled = not s.enabled
+        db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/channels/{seed_id}/delete")
+def delete_seed_channel(seed_id: int, db: Session = Depends(get_db)):
+    from app.models import SeedChannel
+
+    s = db.get(SeedChannel, seed_id)
+    if s:
+        db.delete(s)
+        db.commit()
+    return RedirectResponse("/settings", status_code=303)
 
 
 @app.post("/settings/save")
@@ -892,7 +1358,8 @@ async def save_settings(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     allowed = {
         "daily_send_cap", "signature", "user_pitch",
-        "email_subject_template", "email_body_template",
+        "email_subject_template", "email_body_template", "bulk_body_template",
+        "quality_floor", "harvest_pages_per_channel",
         "score_velocity_weight", "score_engagement_weight",
         "score_recency_weight", "score_comment_weight", "recency_window_days",
     }

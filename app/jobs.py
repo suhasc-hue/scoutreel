@@ -77,6 +77,104 @@ def _aware(dt: datetime) -> datetime:
 
 # ---------- discovery ----------
 
+def ingest_videos(db: Session, adapter: YouTubeAdapter, videos, curated: bool = False) -> int:
+    """Classify + enrich + store a batch of hydrated videos. Used by both
+    search discovery and curated-channel harvesting. Returns new film count."""
+    from app.enrich import assess_quality, credits_to_json, infer_country, parse_credits
+
+    settings = get_settings()
+    existing_ids = {
+        sid for (sid,) in db.query(Film.source_id).filter(
+            Film.source_id.in_([v.source_id for v in videos])
+        )
+    }
+    accepted = []
+    for v in videos:
+        if v.source_id in existing_ids:
+            continue
+        result = classify(
+            v.title, v.description, v.duration_seconds,
+            use_llm=settings.use_llm_classifier,
+            api_key=settings.anthropic_api_key,
+            model=settings.anthropic_model,
+            curated=curated,
+        )
+        db.add(
+            ClassifierLog(
+                source=v.source, source_id=v.source_id, title=v.title[:500],
+                duration_seconds=v.duration_seconds,
+                decision=result.is_short_film, confidence=result.confidence,
+                reason=result.reason[:250],
+            )
+        )
+        if result.is_short_film:
+            accepted.append((v, result))
+
+    known = {
+        c.source_channel_id: c
+        for c in db.query(Channel).filter(
+            Channel.source == "youtube",
+            Channel.source_channel_id.in_({v.channel_source_id for v, _ in accepted}),
+        )
+    }
+    missing = [v.channel_source_id for v, _ in accepted if v.channel_source_id not in known]
+    profiles = {}
+    if missing:
+        try:
+            profiles = adapter.get_creator_profiles(missing)
+        except QuotaExceeded as exc:
+            logger.warning("profile fetch stopped, quota exhausted: {}", exc)
+
+    now = datetime.now(timezone.utc)
+    new_count = 0
+    for v, result in accepted:
+        try:
+            channel = known.get(v.channel_source_id)
+            if channel is None:
+                p = profiles.get(v.channel_source_id)
+                channel = Channel(
+                    source=v.source,
+                    source_channel_id=v.channel_source_id,
+                    name=p.name if p else "",
+                    url=p.url if p else "",
+                    subscriber_count=p.subscriber_count if p else 0,
+                    country=p.country if p else None,
+                    description=p.description if p else "",
+                    last_checked_at=now,
+                )
+                db.add(channel)
+                db.flush()
+                known[v.channel_source_id] = channel
+            credits = parse_credits(v.description)
+            quality, is_festival, is_award = assess_quality(
+                v.title, v.description, credits, result.film_school,
+                result.genre, channel.subscriber_count, curated_source=curated,
+            )
+            film = Film(
+                source=v.source, source_id=v.source_id, url=v.url,
+                title=v.title, description=v.description,
+                duration_seconds=v.duration_seconds,
+                published_at=v.published_at, thumbnail_url=v.thumbnail_url,
+                channel_id=channel.id, is_short_film=True,
+                genre=result.genre, language=result.language,
+                film_school=result.film_school, status="new",
+                country=infer_country(channel.country, result.language),
+                credits=credits_to_json(credits),
+                quality_score=quality,
+                is_festival=is_festival, is_award=is_award,
+            )
+            db.add(film)
+            db.flush()
+            if v.views:  # free first snapshot from the hydration call
+                db.add(FilmStat(film_id=film.id, captured_at=now,
+                                views=v.views, likes=v.likes, comments=v.comments))
+            new_count += 1
+        except Exception as exc:  # noqa: BLE001 — one bad video never kills the batch
+            logger.error("failed to ingest {}: {}", v.source_id, exc)
+    db.commit()
+    return new_count
+
+
 def discovery_job() -> None:
     settings = get_settings()
     if not settings.youtube_api_key:
@@ -93,102 +191,88 @@ def discovery_job() -> None:
         except QuotaExceeded as exc:
             logger.warning("discovery stopped, quota exhausted: {}", exc)
             return
-
-        # Classify first, then batch-fetch profiles only for channels of
-        # accepted films that we don't know yet (50 channels per quota unit).
-        accepted = []
-        for v in videos:
-            exists = (
-                db.query(Film.id)
-                .filter_by(source=v.source, source_id=v.source_id)
-                .one_or_none()
-            )
-            if exists:
-                continue
-            result = classify(
-                v.title, v.description, v.duration_seconds,
-                use_llm=settings.use_llm_classifier,
-                api_key=settings.anthropic_api_key,
-                model=settings.anthropic_model,
-            )
-            db.add(
-                ClassifierLog(
-                    source=v.source, source_id=v.source_id, title=v.title[:500],
-                    duration_seconds=v.duration_seconds,
-                    decision=result.is_short_film, confidence=result.confidence,
-                    reason=result.reason[:250],
-                )
-            )
-            if result.is_short_film:
-                accepted.append((v, result))
-
-        known = {
-            c.source_channel_id: c
-            for c in db.query(Channel).filter(
-                Channel.source == "youtube",
-                Channel.source_channel_id.in_({v.channel_source_id for v, _ in accepted}),
-            )
-        }
-        missing = [v.channel_source_id for v, _ in accepted if v.channel_source_id not in known]
-        profiles = {}
-        if missing:
-            try:
-                profiles = adapter.get_creator_profiles(missing)
-            except QuotaExceeded as exc:
-                logger.warning("profile fetch stopped, quota exhausted: {}", exc)
-
-        new_count = 0
-        for v, result in accepted:
-            try:
-                channel = known.get(v.channel_source_id)
-                if channel is None:
-                    p = profiles.get(v.channel_source_id)
-                    channel = Channel(
-                        source=v.source,
-                        source_channel_id=v.channel_source_id,
-                        name=p.name if p else "",
-                        url=p.url if p else "",
-                        subscriber_count=p.subscriber_count if p else 0,
-                        country=p.country if p else None,
-                        description=p.description if p else "",
-                        last_checked_at=datetime.now(timezone.utc),
-                    )
-                    db.add(channel)
-                    db.flush()
-                    known[v.channel_source_id] = channel
-                from app.enrich import (
-                    assess_quality,
-                    credits_to_json,
-                    infer_country,
-                    parse_credits,
-                )
-
-                credits = parse_credits(v.description)
-                quality, is_festival, is_award = assess_quality(
-                    v.title, v.description, credits, result.film_school,
-                    result.genre, channel.subscriber_count,
-                )
-                db.add(
-                    Film(
-                        source=v.source, source_id=v.source_id, url=v.url,
-                        title=v.title, description=v.description,
-                        duration_seconds=v.duration_seconds,
-                        published_at=v.published_at, thumbnail_url=v.thumbnail_url,
-                        channel_id=channel.id, is_short_film=True,
-                        genre=result.genre, language=result.language,
-                        film_school=result.film_school, status="new",
-                        country=infer_country(channel.country, result.language),
-                        credits=credits_to_json(credits),
-                        quality_score=quality,
-                        is_festival=is_festival, is_award=is_award,
-                    )
-                )
-                new_count += 1
-            except Exception as exc:  # noqa: BLE001 — one bad video never kills the batch
-                logger.error("failed to ingest {}: {}", v.source_id, exc)
-        db.commit()
+        new_count = ingest_videos(db, adapter, videos, curated=False)
         logger.info("discovery ({}/{}) done: {} candidates, {} new films",
                     order, duration, len(videos), new_count)
+
+
+# ---------- curated channel harvesting (1 unit per 50 videos) ----------
+
+def ensure_seed_channels(db: Session) -> None:
+    from app.models import DEFAULT_SEED_CHANNELS, SeedChannel
+
+    existing = {s.handle for s in db.query(SeedChannel).all()}
+    for handle, label in DEFAULT_SEED_CHANNELS:
+        if handle not in existing:
+            db.add(SeedChannel(handle=handle, label=label))
+    db.commit()
+
+
+def harvest_seed_channel(
+    db: Session, adapter: YouTubeAdapter, seed, max_pages: int = 4, resume: bool = False
+) -> int:
+    """Walk a curated channel's uploads playlist and ingest everything that
+    passes the (lenient) curated classifier.
+
+    resume=True continues a deep walk from the stored page token (library
+    building); resume=False starts from the newest uploads (recurring
+    freshness sweeps)."""
+    if not seed.uploads_playlist:
+        resolved = adapter.resolve_channel(seed.handle)
+        if not resolved:
+            logger.warning("could not resolve seed channel {!r}", seed.handle)
+            return 0
+        seed.channel_ref, seed.uploads_playlist = resolved
+        db.commit()
+    new_count = 0
+    token = seed.next_page_token if resume else None
+    for _page in range(max_pages):
+        ids, token = adapter.playlist_page(seed.uploads_playlist, token)
+        if not ids:
+            token = None
+            break
+        existing = {
+            sid for (sid,) in db.query(Film.source_id).filter(Film.source_id.in_(ids))
+        }
+        fresh = [i for i in ids if i not in existing]
+        if fresh:
+            videos = adapter.hydrate_videos(fresh)
+            new_count += ingest_videos(db, adapter, videos, curated=True)
+        if token is None:
+            break
+    if resume:
+        seed.next_page_token = token  # None == playlist fully walked
+    seed.last_harvested_at = datetime.now(timezone.utc)
+    db.commit()
+    return new_count
+
+
+def harvest_job() -> None:
+    """Recurring sweep of curated source channels for fresh uploads."""
+    from app.models import SeedChannel
+    from app.outreach.drafts import get_setting
+
+    settings = get_settings()
+    if not settings.youtube_api_key:
+        logger.warning("harvest skipped: YOUTUBE_API_KEY not set")
+        return
+    with session_scope() as db:
+        ensure_seed_channels(db)
+        try:
+            pages = int(get_setting(db, "harvest_pages_per_channel", "2"))
+        except ValueError:
+            pages = 2
+        adapter = YouTubeAdapter()
+        total = 0
+        for seed in db.query(SeedChannel).filter_by(enabled=True).all():
+            try:
+                total += harvest_seed_channel(db, adapter, seed, max_pages=pages)
+            except QuotaExceeded as exc:
+                logger.warning("harvest stopped, quota exhausted: {}", exc)
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.error("harvest failed for {}: {}", seed.handle, exc)
+        logger.info("harvest done: {} new films", total)
 
 
 # ---------- stats snapshots + scoring ----------
@@ -419,6 +503,8 @@ def reply_poll_job() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("reply poll skipped (Gmail not authorized — run `make gmail-auth`): {}", exc)
             return
+        from app.crm import auto_advance
+
         for email_obj in watched:
             try:
                 replies = client.get_thread_replies(email_obj.gmail_thread_id, me)
@@ -427,8 +513,17 @@ def reply_poll_job() -> None:
                 continue
             if not replies:
                 continue
+            latest = replies[-1]
+            snippet = (latest.snippet or latest.body_text or "")[:500]
+            if snippet != (email_obj.last_reply_snippet or ""):
+                email_obj.last_reply_snippet = snippet
+                email_obj.last_reply_at = datetime.now(timezone.utc)
+                email_obj.unread = True  # new content since last poll
             if email_obj.status == "sent":
                 email_obj.status = "replied"
+            contact_for_stage = db.get(Contact, email_obj.contact_id)
+            if contact_for_stage and contact_for_stage.channel:
+                auto_advance(contact_for_stage.channel, "replied")
             if any(reply_requests_unsubscribe(r) for r in replies):
                 email_obj.status = "opted_out"
                 contact = db.get(Contact, email_obj.contact_id)
@@ -461,6 +556,8 @@ def main() -> None:
         ensure_seed_queries(db)
 
     sched = BlockingScheduler(timezone="UTC")
+    sched.add_job(harvest_job, "interval", hours=6, id="harvest",
+                  next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1))
     sched.add_job(discovery_job, "interval", hours=6, id="discovery",
                   next_run_time=datetime.now(timezone.utc))
     sched.add_job(snapshot_job, "interval", hours=6, id="snapshot",

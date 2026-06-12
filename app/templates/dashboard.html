@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set active = 'filmmakers' %}
+{% block title %}Dashboard — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+<div class="toolbar">
+  <h1 style="margin:0">Dashboard</h1>
+  <a class="btn" style="text-decoration:none; margin-left:auto" href="/filmmakers">Filmmakers →</a>
+</div>
+
+<div class="tiles" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom:20px">
+  <div class="tile-stat"><b>{{ films_total | compact }}</b><span>films discovered</span></div>
+  <div class="tile-stat"><b>{{ films_active | compact }}</b><span>active films</span></div>
+  <div class="tile-stat"><b>{{ filmmakers_total | compact }}</b><span>filmmakers</span></div>
+  <div class="tile-stat"><b>{{ sent }}</b><span>emails sent</span></div>
+  <div class="tile-stat"><b>{{ replied }}</b><span>replies</span></div>
+  <div class="tile-stat hl"><b>{{ response_rate }}%</b><span>response rate</span></div>
+  <div class="tile-stat"><b>{{ collaborating }}</b><span>collaborating</span></div>
+  <div class="tile-stat"><b>{{ unread }}</b><span>unread replies</span></div>
+  <div class="tile-stat"><b>{{ followups_due }}</b><span>follow-ups due</span></div>
+</div>
+
+<h2>Pipeline</h2>
+<div class="card">
+  {% for stage, label, n, color in funnel %}
+  <div style="display:flex; align-items:center; gap:12px; padding:7px 0">
+    <a href="/filmmakers?stage={{ stage }}" style="width:120px; flex:0 0 120px; color:#e5e5e5; text-decoration:none; font-size:13px">{{ label }}</a>
+    <div style="flex:1; background:#202020; border-radius:3px; height:22px; position:relative">
+      <div style="width:{{ (n / max_funnel * 100) | round(1) }}%; min-width:{{ '2px' if n else '0' }}; height:100%; border-radius:3px; background:{{ color }}; opacity:.85"></div>
+    </div>
+    <b style="width:50px; text-align:right">{{ n }}</b>
+  </div>
+  {% endfor %}
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% set active = 'filmmakers' %}
+{% block title %}{{ c.name }} — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if info %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ info }}</div>{% endif %}
+
+<p style="margin-top:0"><a href="/filmmakers?stage={{ c.pipeline_stage }}">← filmmakers</a></p>
+<div class="toolbar" style="align-items:flex-start">
+  <div>
+    <h1 style="margin:0 0 4px">{{ c.name or '?' }}</h1>
+    <div class="muted" style="font-size:13px">
+      {{ c.subscriber_count | compact }} subscribers
+      {% if country_name %} · {{ country_name }}{% if region %} ({{ region }}){% endif %}{% endif %}
+      · <a href="{{ c.url }}" target="_blank" rel="noopener">open channel ↗</a>
+    </div>
+    <div style="margin-top:8px">
+      {% for t in tags %}<span class="badge draft">{{ t }}</span> {% endfor %}
+      {% if c.priority %}<span class="badge opted_out" title="priority">{{ '!' * c.priority }} priority</span>{% endif %}
+      {% if c.followup_at %}<span class="badge sending">follow up {{ c.followup_at.strftime('%b %d') }}</span>{% endif %}
+    </div>
+  </div>
+  <form method="post" action="/filmmakers/{{ c.id }}/stage" style="margin-left:auto; display:flex; gap:8px; align-items:center">
+    <span class="idot dot" style="background:{{ stage_colors[c.pipeline_stage] }}"></span>
+    <select name="stage" onchange="this.form.submit()">
+      {% for s in stages %}<option value="{{ s }}" {{ 'selected' if c.pipeline_stage == s else '' }}>{{ stage_labels[s] }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+
+<div class="grid2" style="grid-template-columns: 1.5fr 1fr; margin-top:8px">
+  <div>
+    <div class="card">
+      <div class="frow" style="margin-bottom:8px; font-size:13px"><strong style="color:#fff">Contacts</strong></div>
+      {% if contacts %}
+        {% for row in contacts %}
+        <div style="display:flex; align-items:center; gap:9px; padding:7px 0; border-top:1px solid var(--border); flex-wrap:wrap">
+          <span class="idot dot {{ 'opted_out' if row.dnc else ('s-shortlisted' if row.contact.confidence == 'listed_business' else 's-contacted') }}"></span>
+          <span style="font-size:13.5px; user-select:all">{{ row.contact.email }}</span>
+          <button type="button" class="copybtn" data-email="{{ row.contact.email }}" title="Copy email">⧉ Copy</button>
+          <span class="muted" style="font-size:11.5px">{{ row.contact.source_of_email }}</span>
+          {% if row.dnc %}<span class="badge opted_out">DNC</span>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+      <p class="muted" style="margin:4px 0">No contact found yet.</p>
+      {% endif %}
+      {% if leads %}
+      <div style="margin-top:8px; border-top:1px solid var(--border); padding-top:8px">
+        <div class="muted" style="font-size:11.5px; margin-bottom:4px">Web leads (open manually):</div>
+        {% for lead in leads %}
+        <div style="font-size:12.5px; padding:2px 0"><a href="{{ lead.url }}" target="_blank" rel="noopener">{{ lead.title or lead.url }}</a></div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+        {% if films %}
+        <form method="post" action="/film/{{ films[0].film.id }}/find-contacts" class="inline">
+          <button {{ 'disabled' if crawling else '' }}>{{ '⏳ Searching…' if crawling else '🔎 Find contacts' }}</button>
+        </form>
+        {% endif %}
+        {% if contacts and films %}
+        <form method="post" action="/filmmakers/bulk-draft" class="inline">
+          <input type="hidden" name="channel_id" value="{{ c.id }}">
+          <button class="primary">✉ Draft outreach</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="frow" style="margin-bottom:8px; font-size:13px"><strong style="color:#fff">Notes</strong></div>
+      <form method="post" action="/filmmakers/{{ c.id }}/notes">
+        <textarea name="notes" placeholder="Private notes — e.g. “Strong visual storytelling. Animation project potential.”" style="min-height:90px">{{ c.notes }}</textarea>
+        <div class="kv" style="grid-template-columns: 110px 1fr; margin-top:10px">
+          <label>Tags (comma-sep)</label>
+          <input type="text" name="tags" value="{{ c.tags }}" placeholder="animation, festival, hindi">
+          <label>Priority</label>
+          <select name="priority">
+            {% for p, lbl in [(0,'—'), (1,'! Low'), (2,'!! Medium'), (3,'!!! High')] %}
+            <option value="{{ p }}" {{ 'selected' if c.priority == p else '' }}>{{ lbl }}</option>
+            {% endfor %}
+          </select>
+          <label>Follow-up date</label>
+          <input type="text" name="followup_at" value="{{ c.followup_at.strftime('%Y-%m-%d') if c.followup_at else '' }}" placeholder="YYYY-MM-DD">
+        </div>
+        <button type="submit" style="margin-top:10px">💾 Save</button>
+      </form>
+    </div>
+
+    {% if emails %}
+    <div class="card">
+      <div class="frow" style="margin-bottom:6px; font-size:13px"><strong style="color:#fff">Outreach history</strong></div>
+      {% for e in emails %}
+      <div style="display:flex; gap:8px; align-items:center; padding:6px 0; border-top:1px solid var(--border); font-size:12.5px">
+        <span class="badge {{ e.status }}">{{ e.status }}</span>
+        <span class="ellip">{{ e.subject }}</span>
+        <span class="muted" style="margin-left:auto; font-size:11.5px">
+          {{ (e.sent_at or e.created_at).strftime('%b %d') }}</span>
+      </div>
+      {% if e.last_reply_snippet %}
+      <div class="muted" style="font-size:12px; padding:0 0 6px 6px; border-left:2px solid var(--border); margin-left:4px">↳ {{ e.last_reply_snippet[:180] }}</div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    <h2 style="margin-top:0">Films ({{ films | length }})</h2>
+    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr))">
+      {% for r in films %}{% include "_film_card.html" %}{% endfor %}
+    </div>
+  </div>
+</div>
+</div>
+<script>
+  document.querySelectorAll('.copybtn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      navigator.clipboard.writeText(b.dataset.email).then(function () {
+        b.textContent = '✓ Copied'; setTimeout(function () { b.textContent = '⧉ Copy'; }, 1200);
+      });
+    });
+  });
+</script>
+{% endblock %}

@@ -16,6 +16,10 @@ class DiscoveredVideo:
     published_at: datetime | None
     thumbnail_url: str
     channel_source_id: str
+    # initial statistics when the listing included them (free first snapshot)
+    views: int = 0
+    likes: int = 0
+    comments: int = 0
 
 
 @dataclass

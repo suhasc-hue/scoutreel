@@ -30,6 +30,34 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0">📡 Curated source channels</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">
+      Harvested via playlist reads (1 quota unit / 50 videos). Films from these
+      sources get a quality boost — they were already human-curated upstream.</p>
+    {% for s in seed_channels %}
+    <div style="display:flex; gap:8px; align-items:center; padding:5px 0; {{ 'border-top:1px solid var(--border)' if not loop.first else '' }}">
+      <span class="idot dot {{ 's-shortlisted' if s.enabled else 's-rejected' }}"></span>
+      <span {% if not s.enabled %}class="muted" style="text-decoration:line-through"{% endif %}>
+        {{ s.label or s.handle }} <span class="muted" style="font-size:11px">{{ s.handle }}</span></span>
+      <span style="margin-left:auto; display:flex; gap:6px">
+        {% if s.last_harvested_at %}<span class="muted" style="font-size:11px">harvested {{ s.last_harvested_at.strftime('%b %d %H:%M') }}</span>{% endif %}
+        <form class="inline" method="post" action="/settings/channels/{{ s.id }}/toggle">
+          <button title="{{ 'disable' if s.enabled else 'enable' }}">{{ '⏸' if s.enabled else '▶' }}</button>
+        </form>
+        <form class="inline" method="post" action="/settings/channels/{{ s.id }}/delete">
+          <button class="bad">✕</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+    <form method="post" action="/settings/channels/add" style="display:flex;gap:8px;margin-top:10px">
+      <input type="text" name="handle" placeholder="@handle or UC… channel id" required>
+      <input type="text" name="label" placeholder="label (optional)">
+      <button class="primary">＋</button>
+    </form>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0">🚫 Do not contact</h2>
     {% if dnc %}
       {% for d in dnc %}
@@ -65,6 +93,18 @@
       <input type="text" name="email_subject_template" value="{{ v.email_subject_template }}">
       <label>Body<br><span class="muted" style="font-size:11px">opt-out footer is always auto-appended</span></label>
       <textarea name="email_body_template">{{ v.email_body_template }}</textarea>
+      <label>Bulk outreach body<br><span class="muted" style="font-size:11px">vars: director_name, filmmaker_name, film_title, user_pitch, signature — no manual edit required before approval</span></label>
+      <textarea name="bulk_body_template">{{ v.bulk_body_template }}</textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">🎚 Curation</h2>
+    <div class="kv">
+      <label>Quality floor (0–10)<br><span class="muted" style="font-size:11px">home page hides films below this</span></label>
+      <input type="text" name="quality_floor" value="{{ v.quality_floor }}" style="width:110px">
+      <label>Harvest pages / channel / run<br><span class="muted" style="font-size:11px">each page = 50 videos from a curated source</span></label>
+      <input type="number" name="harvest_pages_per_channel" value="{{ v.harvest_pages_per_channel }}" min="1" max="50" style="width:110px">
     </div>
   </div>
 

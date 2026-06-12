@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set active = 'inbox' %}
+{% block title %}Inbox — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if info %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ info }}</div>{% endif %}
+
+<div class="toolbar">
+  <h1 style="margin:0">Inbox</h1>
+  {% if unread %}<span class="count" style="background:var(--red); color:#fff">{{ unread }} unread</span>{% endif %}
+</div>
+
+{% if rows %}
+  {% for row in rows %}
+  {% set e = row.e %}
+  <div class="card" style="padding:13px 16px; {{ 'border-left:4px solid var(--red)' if e.unread else '' }}">
+    <div class="frow" style="font-size:13px; gap:10px">
+      {% if e.unread %}<span class="idot dot" style="background:var(--red)" title="unread"></span>{% endif %}
+      <strong style="color:#fff">
+        {% if e.contact and e.contact.channel %}
+        <a href="/filmmaker/{{ e.contact.channel.id }}" style="color:#fff; text-decoration:none">{{ e.contact.channel.name }}</a>
+        {% else %}{{ e.contact.email if e.contact else '?' }}{% endif %}
+      </strong>
+      <span class="muted">{{ e.contact.email if e.contact else '' }}</span>
+      <span class="badge {{ e.status }}">{{ e.status }}</span>
+      {% if row.followup_due %}<span class="badge sending">follow-up due</span>{% endif %}
+      <span class="muted" style="margin-left:auto; font-size:12px">
+        sent {{ e.sent_at.strftime('%b %d') if e.sent_at else '—' }}
+        {% if e.last_reply_at %} · replied {{ e.last_reply_at.strftime('%b %d %H:%M') }}{% endif %}
+      </span>
+    </div>
+    <div class="muted ellip" style="font-size:12.5px; margin-top:4px">✉ {{ e.subject }}
+      {% if e.film %} · <a href="/film/{{ e.film.id }}">{{ e.film.title }}</a>{% endif %}</div>
+    {% if e.last_reply_snippet %}
+    <div style="font-size:13px; margin-top:8px; padding:8px 12px; background:#202020; border-radius:4px; {{ 'color:#fff; font-weight:600' if e.unread else 'color:var(--text2)' }}">
+      ↳ {{ e.last_reply_snippet[:300] }}
+    </div>
+    {% endif %}
+    <div style="display:flex; gap:8px; margin-top:9px">
+      {% if e.gmail_thread_id %}
+      <a class="btn" style="text-decoration:none" target="_blank" rel="noopener"
+         href="https://mail.google.com/mail/u/0/#all/{{ e.gmail_thread_id }}">Open in Gmail ↗</a>
+      {% endif %}
+      {% if e.unread %}
+      <form class="inline" method="post" action="/inbox/{{ e.id }}/read"><button>Mark read</button></form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+<div class="card muted">No conversations yet — sent outreach shows up here, with replies pulled in every 2 hours.</div>
+{% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% set active = 'filmmakers' %}
+{% block title %}Filmmakers — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if info %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ info }}</div>{% endif %}
+
+<div class="toolbar">
+  <h1 style="margin:0">Filmmakers</h1>
+  <a class="btn" style="text-decoration:none" href="/dashboard">📊 Dashboard</a>
+  <a class="btn" style="text-decoration:none; margin-left:auto" href="/filmmakers/export?stage={{ stage }}">⬇ Export CSV</a>
+</div>
+
+<div class="stage-tabs">
+  {% for s in stages %}
+  <a class="stage-tab {{ 'on' if stage == s else '' }}" href="/filmmakers?stage={{ s }}&sort={{ sort }}">
+    <span class="idot dot" style="background:{{ stage_colors[s] }}"></span>
+    {{ stage_labels[s] }} <b>{{ counts.get(s, 0) }}</b>
+  </a>
+  {% endfor %}
+  <a class="stage-tab {{ 'on' if stage == 'all' else '' }}" href="/filmmakers?stage=all&sort={{ sort }}">All <b>{{ counts.values() | sum }}</b></a>
+</div>
+
+<form method="get" action="/filmmakers" class="toolbar" style="margin-top:12px">
+  <input type="hidden" name="stage" value="{{ stage }}">
+  <input type="text" name="q" value="{{ q }}" placeholder="Search name, notes, tags…" style="max-width:280px">
+  <select name="sort" onchange="this.form.submit()">
+    {% for s, lbl in [('recent','recently changed'), ('priority','priority'), ('followup','follow-up date'), ('name','name'), ('subs','subscribers')] %}
+    <option value="{{ s }}" {{ 'selected' if sort == s else '' }}>{{ lbl }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Search</button>
+</form>
+
+{% if rows %}
+<form method="post" action="/filmmakers/bulk-draft" id="bulkform">
+  {% if stage in ('shortlisted', 'replied', 'discovered') %}
+  <div class="toolbar" style="background:var(--surface); padding:10px 14px; border-radius:4px">
+    <label style="display:flex; gap:8px; align-items:center; color:#fff">
+      <input type="checkbox" style="width:auto" onclick="document.querySelectorAll('.bulksel').forEach(c => c.checked = this.checked)"> Select all
+    </label>
+    <button class="primary" type="submit">✉ Draft outreach for selected</button>
+    <span class="muted" style="font-size:12px">uses the bulk template — drafts land in the Outbox for approval</span>
+  </div>
+  {% endif %}
+  <table style="background:var(--surface); border-radius:4px">
+    <thead>
+      <tr><th style="width:24px"></th><th>Filmmaker</th><th>Best film</th><th>Rating</th>
+          <th>Contact</th><th>Priority</th><th>Stage</th><th>Last contact</th><th>Follow-up</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% set c = row.channel %}
+      <tr>
+        <td><input type="checkbox" class="bulksel" name="channel_id" value="{{ c.id }}" style="width:auto"></td>
+        <td>
+          <a href="/filmmaker/{{ c.id }}" style="color:#fff; font-weight:600">{{ c.name or '?' }}</a>
+          <div class="muted" style="font-size:11.5px">
+            {{ c.subscriber_count | compact }} subs · {{ row.film_count }} film{{ 's' if row.film_count != 1 }}
+            {% for t in row.tags[:3] %}<span class="badge draft" style="margin-left:4px">{{ t }}</span>{% endfor %}
+          </div>
+        </td>
+        <td class="ellip" style="max-width:240px">
+          {% if row.best %}<a href="/film/{{ row.best.film.id }}">{{ row.best.film.title }}</a>{% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>{% if row.best and row.best.stars %}
+          <span title="{{ row.best.stars_label }}" style="color:var(--amber); letter-spacing:1px">{{ row.best.stars_str }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>
+          {% if row.contact %}
+          <span style="font-size:12.5px">{{ row.contact.email }}</span>
+          <button type="button" class="copybtn" data-email="{{ row.contact.email }}" title="Copy email">⧉</button>
+          {% if row.contact_count > 1 %}<span class="muted" style="font-size:11px">+{{ row.contact_count - 1 }}</span>{% endif %}
+          {% else %}<span class="muted">none yet</span>{% endif %}
+        </td>
+        <td><span style="color:var(--red); letter-spacing:1px">{{ '!' * c.priority }}</span>{% if not c.priority %}<span class="muted">—</span>{% endif %}</td>
+        <td>
+          <select onchange="postStage({{ c.id }}, this.value)" style="font-size:12px; padding:4px 6px">
+            {% for s in stages %}<option value="{{ s }}" {{ 'selected' if c.pipeline_stage == s else '' }}>{{ stage_labels[s] }}</option>{% endfor %}
+          </select>
+        </td>
+        <td class="muted" style="font-size:12px">{{ c.last_contacted_at.strftime('%b %d') if c.last_contacted_at else '—' }}</td>
+        <td class="muted" style="font-size:12px">{{ c.followup_at.strftime('%b %d') if c.followup_at else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</form>
+{% else %}
+<div class="card muted">No filmmakers in this stage{% if q %} matching “{{ q }}”{% endif %}.</div>
+{% endif %}
+</div>
+<script>
+  function postStage(id, stage) {
+    var f = document.createElement('form');
+    f.method = 'post'; f.action = '/filmmakers/' + id + '/stage';
+    var i = document.createElement('input');
+    i.type = 'hidden'; i.name = 'stage'; i.value = stage;
+    f.appendChild(i); document.body.appendChild(f); f.submit();
+  }
+  document.querySelectorAll('.copybtn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      navigator.clipboard.writeText(b.dataset.email).then(function () {
+        b.textContent = '✓'; setTimeout(function () { b.textContent = '⧉'; }, 1200);
+      });
+    });
+  });
+</script>
+{% endblock %}

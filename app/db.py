@@ -43,6 +43,16 @@ def _auto_migrate() -> None:
                         f'ALTER TABLE "{table.name}" ADD COLUMN '
                         f'"{col.name}" {col.type.compile(engine.dialect)}'
                     )
+                    # carry simple scalar defaults so existing rows don't
+                    # become NULL where the model expects a value
+                    default = getattr(col.default, "arg", None)
+                    if isinstance(default, bool):
+                        ddl += f" DEFAULT {int(default)}"
+                    elif isinstance(default, (int, float)):
+                        ddl += f" DEFAULT {default}"
+                    elif isinstance(default, str):
+                        escaped = default.replace("'", "''")
+                        ddl += f" DEFAULT '{escaped}'"
                     conn.execute(text(ddl))
     # Indexes: create_all skips tables that already exist, so create these
     # explicitly (no-op when present).

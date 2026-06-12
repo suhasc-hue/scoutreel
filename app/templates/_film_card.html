@@ -11,9 +11,9 @@
       </div>
     {% endif %}
     <a class="cover-link" href="/film/{{ r.film.id }}" aria-label="{{ r.film.title }}"></a>
-    {% if r.score %}
-      <span class="chip score {{ 'hot' if max_score and r.score.total_score >= max_score * 0.66 else '' }}"
-            title="virality score {{ '%.1f'|format(r.score.total_score) }}">{{ '%.1f'|format(r.score.total_score) }}</span>
+    {% if r.stars %}
+      <span class="chip score {{ 'hot' if r.stars >= 5 else '' }}"
+            title="{{ r.stars_label }} ({{ r.match }}% match)">{{ '★' * r.stars }}</span>
     {% endif %}
     <span class="dot s-{{ r.film.status }}" title="{{ r.film.status }}"></span>
 
@@ -45,7 +45,8 @@
         </a>
       </div>
       <div class="hmeta">
-        {% if r.match %}<b class="match">{{ r.match }}% Match</b>{% endif %}
+        {% if r.stars %}<span class="stars" title="{{ r.match }}% match">{{ r.stars_str }}</span>
+        <span style="color:#ddd; font-size:11.5px">{{ r.stars_label }}</span>{% endif %}
         {% if r.film.duration_seconds %}<span>{{ (r.film.duration_seconds / 60) | round | int }}m</span>{% endif %}
         {% if r.film.language %}<span class="lang-badge">{{ r.film.language[:3] }}</span>{% endif %}
       </div>

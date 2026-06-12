@@ -13,7 +13,8 @@
   <div class="bb-content" style="bottom:8%">
     <h1 class="bb-title" style="margin-bottom:10px">{{ f.title }}</h1>
     <div class="bb-meta">
-      {% if r.match %}<b class="match">{{ r.match }}% Match</b>{% endif %}
+      {% if r.stars %}<span class="stars" title="{{ r.match }}% match">{{ r.stars_str }}</span>
+      <span style="color:#ddd">{{ r.stars_label }}</span>{% endif %}
       {% if f.published_at %}<span>{{ f.published_at.strftime('%Y') }}</span>{% endif %}
       {% if f.duration_seconds %}<span>{{ (f.duration_seconds / 60) | round | int }}m</span>{% endif %}
       {% if f.language %}<span class="lang-badge">{{ f.language }}</span>{% endif %}
@@ -45,7 +46,7 @@
     <p style="font-size:14.5px; line-height:1.55; color:#ddd; max-width:68ch; margin-top:6px; white-space:pre-line">{{ f.description[:500] }}{% if f.description|length > 500 %}…{% endif %}</p>
     {% endif %}
     <div class="tiles" style="margin:16px 0">
-      <div class="tile-stat hl"><b>{{ '%.1f'|format(r.score.total_score) if r.score else '—' }}</b><span>score</span></div>
+      <div class="tile-stat hl"><b class="stars" style="font-size:17px">{{ r.stars_str if r.stars else '—' }}</b><span>{{ r.stars_label if r.stars else 'rating' }}</span></div>
       <div class="tile-stat"><b>{{ (r.score.velocity_score | round | int | compact) if r.score else '—' }}</b><span>views/hr</span></div>
       <div class="tile-stat"><b>{{ r.views | compact }}</b><span>views</span></div>
       <div class="tile-stat"><b>{{ (r.stats[-1].likes if r.stats else 0) | compact }}</b><span>likes</span></div>

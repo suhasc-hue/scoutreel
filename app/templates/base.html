@@ -235,6 +235,16 @@
     th { color: var(--text2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
     .kv { display: grid; grid-template-columns: 200px 1fr; gap: 8px 14px; align-items: center; }
     label { color: var(--text2); font-size: 13px; }
+    /* pipeline tabs + copy buttons */
+    .stage-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 4px; }
+    .stage-tab { display: inline-flex; align-items: center; gap: 7px; padding: 6px 13px;
+                 border-radius: 99px; background: var(--surface); color: var(--text2);
+                 text-decoration: none; font-size: 12.5px; border: 1px solid transparent; }
+    .stage-tab b { color: #fff; }
+    .stage-tab:hover { border-color: #444; }
+    .stage-tab.on { background: var(--surface2); color: #fff; border-color: #555; }
+    .copybtn { padding: 2px 8px; font-size: 11.5px; border-radius: 3px; }
+    .stars { color: var(--amber); letter-spacing: 1.5px; }
     @media (max-width: 800px) {
       .grid2 { grid-template-columns: 1fr; } .kv { grid-template-columns: 1fr; }
       .bb-content { max-width: 88%; }
@@ -248,6 +258,8 @@
   <a href="/films" class="navlink {{ 'active' if active == 'films' and active_page != 'animation' else '' }}">Home</a>
   <a href="/films?status=active&sort=score" class="navlink">Browse</a>
   <a href="/animation" class="navlink {{ 'active' if active_page == 'animation' else '' }}">Animation</a>
+  <a href="/filmmakers" class="navlink {{ 'active' if active == 'filmmakers' else '' }}">Filmmakers</a>
+  <a href="/inbox" class="navlink {{ 'active' if active == 'inbox' else '' }}">Inbox</a>
   <a href="/outbox" class="navlink {{ 'active' if active == 'outbox' else '' }}">Outbox</a>
   <a href="/settings" class="navlink {{ 'active' if active == 'settings' else '' }}">Settings</a>
   <form class="navsearch" action="/films" method="get" autocomplete="off">

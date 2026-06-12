@@ -20,6 +20,7 @@
       </div>
       <h2 class="bb-title">{{ bf.title }}</h2>
       <div class="bb-meta">
+        {% if billboard.stars %}<span class="stars" title="{{ billboard.stars_label }}">{{ billboard.stars_str }}</span>{% endif %}
         {% if billboard.match %}<b class="match">{{ billboard.match }}% Match</b>{% endif %}
         <span>{{ billboard.views | compact }} views</span>
         {% if bf.duration_seconds %}<span>{{ (bf.duration_seconds / 60) | round | int }}m</span>{% endif %}

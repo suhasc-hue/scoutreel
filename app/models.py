@@ -34,6 +34,16 @@ class Channel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- filmmaker pipeline (CRM) ---
+    # discovered|shortlisted|contacted|replied|in_discussion|collaborating|rejected
+    pipeline_stage: Mapped[str] = mapped_column(String(24), default="discovered", index=True)
+    stage_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(String(256), default="")  # comma-separated
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # 0 none .. 3 high
+    followup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     films: Mapped[list["Film"]] = relationship(back_populates="channel")
     contacts: Mapped[list["Contact"]] = relationship(back_populates="channel")
 
@@ -139,6 +149,10 @@ class OutreachEmail(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     gmail_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_followup: Mapped[bool] = mapped_column(Boolean, default=False)
+    # inbox fields — populated by the reply-poll job
+    unread: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_reply_snippet: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_reply_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     contact: Mapped[Contact] = relationship()
     film: Mapped[Film] = relationship()
@@ -179,6 +193,24 @@ class SeedQuery(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SeedChannel(Base):
+    """Curated source channels (festival aggregators, film schools) whose
+    uploads are harvested via playlist reads — 1 quota unit per 50 videos,
+    vs 100 units per search. Editable from the dashboard."""
+
+    __tablename__ = "seed_channels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    handle: Mapped[str] = mapped_column(String(128), unique=True)  # @handle or UC… id
+    label: Mapped[str] = mapped_column(String(128), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    channel_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)  # resolved UC id
+    uploads_playlist: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    next_page_token: Mapped[str | None] = mapped_column(String(128), nullable=True)  # deep-walk resume
+    last_harvested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class QuotaUsage(Base):
     """Daily YouTube API quota tracking (units, Pacific-time day like Google's)."""
 
@@ -215,6 +247,28 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
 
+
+# Public, well-known curated short-film sources (aggregators, festival
+# channels, animation schools). Stored in the DB on first run; the user can
+# add/remove/disable any of them from Settings.
+DEFAULT_SEED_CHANNELS = [
+    ("@Omeleto", "Omeleto — festival shorts"),
+    ("@watchdust", "DUST — sci-fi shorts"),
+    ("@WatchALTER", "ALTER — horror shorts"),
+    ("@shortoftheweek", "Short of the Week"),
+    ("@filmshortage", "Film Shortage — daily picks"),
+    ("@nobudge", "NoBudge — indie shorts"),
+    ("@PocketFilms", "Pocket Films — Indian shorts"),
+    ("@largeshortfilms", "Large Short Films — Indian prestige"),
+    ("@humaramovie", "Humara Movie — Indian shorts"),
+    ("@Viddsee", "Viddsee — Asian shorts"),
+    ("@TheCGBros", "TheCGBros — CG animation"),
+    ("@CGMeetup", "CGMeetup — animation"),
+    ("@GOBELINS", "Gobelins — animation school"),
+    ("@ESMAmovies", "ESMA — animation school"),
+    ("@TheAnimationWorkshopVIA", "The Animation Workshop"),
+    ("@filmakademie", "Filmakademie — film school"),
+]
 
 DEFAULT_SEED_QUERIES = [
     "short film",

@@ -189,7 +189,7 @@ class YouTubeAdapter(SourceAdapter):
             chunk = video_ids[i : i + 50]
             try:
                 charge_quota(LIST_COST)
-                resp = self._videos_list(chunk, "snippet,contentDetails")
+                resp = self._videos_list(chunk, "snippet,contentDetails,statistics")
             except QuotaExceeded:
                 break
             except Exception as exc:
@@ -216,6 +216,7 @@ class YouTubeAdapter(SourceAdapter):
             published = datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00"))
         thumbs = sn.get("thumbnails", {})
         thumb = (thumbs.get("medium") or thumbs.get("default") or {}).get("url", "")
+        st = item.get("statistics", {})
         return DiscoveredVideo(
             source="youtube",
             source_id=item["id"],
@@ -228,7 +229,70 @@ class YouTubeAdapter(SourceAdapter):
             published_at=published,
             thumbnail_url=thumb,
             channel_source_id=sn.get("channelId", ""),
+            views=int(st.get("viewCount", 0) or 0),
+            likes=int(st.get("likeCount", 0) or 0),
+            comments=int(st.get("commentCount", 0) or 0),
         )
+
+    # ---- curated channel harvesting (1 unit per 50 videos) ----
+
+    def resolve_channel(self, handle_or_id: str) -> tuple[str, str] | None:
+        """@handle or UC… id -> (channel_id, uploads_playlist_id)."""
+        params: dict = {"part": "contentDetails"}
+        ref = handle_or_id.strip()
+        if ref.startswith("UC") and len(ref) >= 20:
+            params["id"] = ref
+        else:
+            params["forHandle"] = ref.lstrip("@")
+        try:
+            charge_quota(LIST_COST)
+            resp = self._channels_list_raw(params)
+        except QuotaExceeded:
+            raise
+        except Exception as exc:
+            if _is_quota_error(exc):
+                raise QuotaExceeded(str(exc)) from exc
+            logger.error("resolve_channel failed for {}: {}", handle_or_id, exc)
+            return None
+        items = resp.get("items", [])
+        if not items:
+            return None
+        ch = items[0]
+        uploads = ch.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+        return (ch["id"], uploads) if uploads else None
+
+    @api_retry
+    def _channels_list_raw(self, params: dict) -> dict:
+        return self.yt.channels().list(**params).execute()
+
+    def playlist_page(self, playlist_id: str, page_token: str | None = None) -> tuple[list[str], str | None]:
+        """One page (50 ids) of a playlist. Returns (video_ids, next_token)."""
+        try:
+            charge_quota(LIST_COST)
+            resp = self._playlist_items(playlist_id, page_token)
+        except QuotaExceeded:
+            raise
+        except Exception as exc:
+            if _is_quota_error(exc):
+                raise QuotaExceeded(str(exc)) from exc
+            logger.error("playlistItems failed for {}: {}", playlist_id, exc)
+            return [], None
+        ids = [
+            it.get("contentDetails", {}).get("videoId")
+            for it in resp.get("items", [])
+        ]
+        return [i for i in ids if i], resp.get("nextPageToken")
+
+    @api_retry
+    def _playlist_items(self, playlist_id: str, page_token: str | None) -> dict:
+        kwargs = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 50}
+        if page_token:
+            kwargs["pageToken"] = page_token
+        return self.yt.playlistItems().list(**kwargs).execute()
+
+    def hydrate_videos(self, video_ids: list[str]) -> list[DiscoveredVideo]:
+        """Public access to snippet+stats hydration for harvested ids."""
+        return self._hydrate(video_ids)
 
     # ---- stats ----
 

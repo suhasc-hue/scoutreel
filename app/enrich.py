@@ -143,16 +143,21 @@ def assess_quality(
     film_school: bool,
     genre: str | None,
     channel_subscriber_count: int = 0,
+    curated_source: bool = False,
 ) -> tuple[float, bool, bool]:
     """Returns (quality_score 0-10, is_festival, is_award).
 
     Professional markers raise the score; clip-farm markers sink it. The home
-    page only surfaces films above a quality floor."""
+    page only surfaces films above a quality floor. curated_source marks
+    films harvested from festival/aggregator/film-school channels — already
+    human-curated upstream, so they start with a strong prior."""
     text = f"{title}\n{description[:2500]}"
     is_festival = bool(FESTIVAL_RE.search(text))
     is_award = bool(AWARD_RE.search(text))
 
     q = 1.0  # passed the classifier at all
+    if curated_source:
+        q += 3.0  # picked by a human curator upstream
     if is_festival:
         q += 3.0
     if is_award:
@@ -173,7 +178,7 @@ def assess_quality(
         q -= 1.5
     if "🔥" in title or "😂" in title or "😱" in title:
         q -= 1.0
-    if channel_subscriber_count > 1_000_000 and q < 4:
+    if channel_subscriber_count > 1_000_000 and q < 4 and not curated_source:
         q -= 2.0  # huge channel with zero professional markers = content farm
 
     return max(0.0, min(q, 10.0)), is_festival, is_award

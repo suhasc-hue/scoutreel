@@ -240,6 +240,27 @@ def llm_classify(
         return None
 
 
+def classify_curated(title: str, description: str, duration_seconds: int) -> Classification:
+    """Videos from curated source channels (festival aggregators, film
+    schools) are short films by default — only duration and negative-format
+    markers (trailers, BTS, podcasts) can reject them."""
+    language = detect_language(title, description)
+    genre = detect_genre(title, description)
+    film_school = detect_film_school(title, description)
+    title_l = title.lower()
+    if not (MIN_DURATION_S <= duration_seconds <= MAX_DURATION_S):
+        return Classification(False, 0.9, genre=genre, language=language,
+                              film_school=film_school,
+                              reason=f"duration {duration_seconds}s out of range")
+    for pat in NEGATIVE_TITLE_PATTERNS:
+        if re.search(pat, title_l):
+            return Classification(False, 0.8, genre=genre, language=language,
+                                  film_school=film_school,
+                                  reason=f"negative keyword in title: {pat}")
+    return Classification(True, 0.9, genre=genre, language=language,
+                          film_school=film_school, reason="curated source")
+
+
 def classify(
     title: str,
     description: str,
@@ -247,7 +268,10 @@ def classify(
     use_llm: bool = False,
     api_key: str = "",
     model: str = "claude-sonnet-4-20250514",
+    curated: bool = False,
 ) -> Classification:
+    if curated:
+        return classify_curated(title, description, duration_seconds)
     result = heuristic_classify(title, description, duration_seconds)
     if use_llm and api_key and result.is_short_film:
         refined = llm_classify(title, description, duration_seconds, api_key, model)

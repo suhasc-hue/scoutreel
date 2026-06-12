@@ -27,6 +27,14 @@ If you're open to it, I'd love to chat — no obligation, of course.
 
 {{ signature }}"""
 
+DEFAULT_BULK_TEMPLATE = """Hi {{ director_name }},
+
+We loved your film “{{ film_title }}” and would love to connect regarding potential collaboration opportunities.
+
+{{ user_pitch }}
+
+{{ signature }}"""
+
 SOURCE_DESCRIPTIONS = {
     "channel_about": "the contact email listed publicly on your channel",
     "bio_link": "the contact info in your public bio links",
@@ -101,18 +109,36 @@ def has_unedited_placeholder(body: str) -> bool:
     return bool(re.search(r"\[ADD A SPECIFIC COMPLIMENT", body))
 
 
-def render_draft(db: Session, film: Film, contact: Contact) -> tuple[str, str]:
-    """Returns (subject, body) with the footer guaranteed present."""
+def _director_name(film: Film) -> str:
+    """Credited director when we extracted one; channel name otherwise."""
+    from app.enrich import credits_from_json
+
+    credits = credits_from_json(film.credits)
+    if credits.get("Director"):
+        return credits["Director"][0]
+    return (film.channel.name if film.channel else "") or "there"
+
+
+def render_draft(
+    db: Session, film: Film, contact: Contact, bulk: bool = False
+) -> tuple[str, str]:
+    """Returns (subject, body) with the footer guaranteed present.
+    bulk=True uses the bulk template (no compliment placeholder, so the
+    draft is approvable immediately)."""
     settings = get_settings()
     subject_tpl = get_setting(db, "email_subject_template", DEFAULT_SUBJECT)
-    body_tpl = get_setting(db, "email_body_template", DEFAULT_TEMPLATE)
+    if bulk:
+        body_tpl = get_setting(db, "bulk_body_template", DEFAULT_BULK_TEMPLATE)
+    else:
+        body_tpl = get_setting(db, "email_body_template", DEFAULT_TEMPLATE)
     signature = get_setting(db, "signature", settings.signature) or settings.user_name
     user_pitch = get_setting(db, "user_pitch", settings.user_pitch)
 
     variables = {
         "filmmaker_name": (film.channel.name if film.channel else "") or "there",
+        "director_name": _director_name(film),
         "film_title": film.title,
-        "specific_compliment": generate_compliment(film),
+        "specific_compliment": generate_compliment(film) if not bulk else "",
         "user_pitch": user_pitch,
         "signature": signature,
     }
