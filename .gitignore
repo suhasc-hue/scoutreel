@@ -8,3 +8,5 @@ token.json
 credentials.json
 tokens/
 backups/
+build_log.txt
+build_err.txt
