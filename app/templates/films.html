@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% set active = 'films' %}
+{% block title %}ScoutReel{% endblock %}
+{% block content %}
+{% if view == 'home' %}
+
+  {% if billboard %}
+  {% set bf = billboard.film %}
+  <div class="billboard"
+       style="background-image:
+         {%- if bf.thumbnail_url %} url('{{ bf.thumbnail_url | yt_thumb('maxres') }}'), url('{{ bf.thumbnail_url | yt_thumb('sd') }}'), url('{{ bf.thumbnail_url }}')
+         {%- else %} linear-gradient(135deg, hsl({{ (bf.id * 67) % 360 }},45%,26%), hsl({{ (bf.id * 67 + 50) % 360 }},50%,10%))
+         {%- endif %}">
+    <div class="bb-shade"></div>
+    <div class="bb-fade"></div>
+    <div class="bb-content">
+      <div class="bb-rank">
+        <span class="top-badge">Top<br>10</span>
+        <span>#1 in {{ rank_label or 'Trending Today' }}</span>
+      </div>
+      <h2 class="bb-title">{{ bf.title }}</h2>
+      <div class="bb-meta">
+        {% if billboard.match %}<b class="match">{{ billboard.match }}% Match</b>{% endif %}
+        <span>{{ billboard.views | compact }} views</span>
+        {% if bf.duration_seconds %}<span>{{ (bf.duration_seconds / 60) | round | int }}m</span>{% endif %}
+        {% if bf.language %}<span class="lang-badge">{{ bf.language }}</span>{% endif %}
+        {% if bf.genre %}<span class="muted">{{ bf.genre.title() }}</span>{% endif %}
+      </div>
+      {% if bf.description %}
+      <p class="bb-syn">{{ bf.description[:220] }}</p>
+      {% endif %}
+      <div class="bb-actions">
+        <a class="btn-play" href="{{ bf.url }}" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M7 5v14l12-7z"/></svg> Watch
+        </a>
+        <a class="btn-glass" href="/film/{{ bf.id }}">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          More Info
+        </a>
+        {% if bf.status != 'shortlisted' %}
+        <form class="inline" method="post" action="/films/{{ bf.id }}/status">
+          <input type="hidden" name="status" value="shortlisted">
+          <button class="btn-glass" type="submit">＋ Shortlist</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="page-top"></div>
+  {% endif %}
+
+  {% if rows_list %}
+    {% for title, link, cards in rows_list %}
+    <div class="nrow">
+      <h3 class="row-title"><a href="{{ link }}">{{ title }} <span class="explore">Explore all ›</span></a></h3>
+      <div class="rail">
+        <div class="row-scroller">
+          {% for r in cards %}{% include "_film_card.html" %}{% endfor %}
+        </div>
+        <button class="paddle left" aria-label="scroll back">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <button class="paddle right" aria-label="scroll forward">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <div class="page-pad"><div class="card muted">Nothing here yet — run <code>make worker</code> (needs a YouTube key) or <code>make demo</code>.</div></div>
+  {% endif %}
+
+{% else %}
+
+<div class="page-pad page-top">
+<div class="toolbar">
+  <form method="get" action="/films" class="toolbar" style="margin:0">
+    {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+    {% if genre %}<input type="hidden" name="genre" value="{{ genre }}">{% endif %}
+    {% if language %}<input type="hidden" name="language" value="{{ language }}">{% endif %}
+    <select name="status" onchange="this.form.submit()">
+      {% for s in ['active','new','shortlisted','rejected','contacted','all'] %}
+      <option value="{{ s }}" {{ 'selected' if status == s else '' }}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <select name="sort" onchange="this.form.submit()">
+      <option value="score" {{ 'selected' if sort == 'score' else '' }}>score</option>
+      <option value="views" {{ 'selected' if sort == 'views' else '' }}>views</option>
+      <option value="recent" {{ 'selected' if sort == 'recent' else '' }}>newest</option>
+      <option value="subs" {{ 'selected' if sort == 'subs' else '' }}>smallest channel</option>
+    </select>
+  </form>
+  {% if q %}<span class="count">“{{ q }}”</span>{% endif %}
+  {% if genre %}<span class="count">{{ genre }}</span>{% endif %}
+  {% if language %}<span class="count">{{ language }}</span>{% endif %}
+  <span class="count">{{ total }}</span>
+  {% if pages > 1 %}
+  <span style="margin-left:auto; display:flex; gap:6px; align-items:center">
+    {% if page > 1 %}<a class="btn" style="text-decoration:none" href="/films?status={{ status }}&sort={{ sort }}&genre={{ genre }}&language={{ language }}&q={{ q }}&page={{ page - 1 }}">←</a>{% endif %}
+    <span class="muted">{{ page }}/{{ pages }}</span>
+    {% if page < pages %}<a class="btn" style="text-decoration:none" href="/films?status={{ status }}&sort={{ sort }}&genre={{ genre }}&language={{ language }}&q={{ q }}&page={{ page + 1 }}">→</a>{% endif %}
+  </span>
+  {% endif %}
+</div>
+{% if rows %}
+<div class="grid">
+  {% for r in rows %}{% include "_film_card.html" %}{% endfor %}
+</div>
+{% else %}
+<div class="card muted">Nothing matches this filter.</div>
+{% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

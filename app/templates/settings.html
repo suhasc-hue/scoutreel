@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% set active = 'settings' %}
+{% block title %}Settings — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+<h1 style="margin-top:0">Settings</h1>
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2 style="margin-top:0">🔍 Search queries</h2>
+    {% for q in queries %}
+    <div style="display:flex; gap:8px; align-items:center; padding:6px 0; {{ 'border-top:1px solid var(--border)' if not loop.first else '' }}">
+      <span class="idot dot {{ 's-shortlisted' if q.enabled else 's-rejected' }}"></span>
+      <span {% if not q.enabled %}class="muted" style="text-decoration:line-through"{% endif %}>{{ q.query }}</span>
+      <span style="margin-left:auto; display:flex; gap:6px">
+        <form class="inline" method="post" action="/settings/queries/{{ q.id }}/toggle">
+          <button title="{{ 'disable' if q.enabled else 'enable' }}">{{ '⏸' if q.enabled else '▶' }}</button>
+        </form>
+        <form class="inline" method="post" action="/settings/queries/{{ q.id }}/delete">
+          <button class="bad">✕</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+    <form method="post" action="/settings/queries/add" style="display:flex;gap:8px;margin-top:10px">
+      <input type="text" name="query" placeholder="add a query…">
+      <button class="primary">＋</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">🚫 Do not contact</h2>
+    {% if dnc %}
+      {% for d in dnc %}
+      <div style="display:flex; gap:8px; align-items:center; padding:6px 0; {{ 'border-top:1px solid var(--border)' if not loop.first else '' }}">
+        <span>{{ d.email }}</span>
+        <span class="muted" style="font-size:12px">{{ d.reason }}</span>
+        <form class="inline" method="post" action="/settings/dnc/{{ d.id }}/delete" style="margin-left:auto"
+              onsubmit="return confirm('Remove {{ d.email }}?')">
+          <button class="bad">✕</button>
+        </form>
+      </div>
+      {% endfor %}
+    {% else %}<p class="muted">Empty.</p>{% endif %}
+    <form method="post" action="/settings/dnc/add" style="display:flex;gap:8px;margin-top:10px">
+      <input type="email" name="email" placeholder="email…" required>
+      <input type="text" name="reason" placeholder="reason…">
+      <button class="primary">＋</button>
+    </form>
+  </div>
+</div>
+
+<form method="post" action="/settings/save">
+  <div class="card">
+    <h2 style="margin-top:0">✉ Outreach</h2>
+    <div class="kv">
+      <label>Send cap / day (max {{ hard_max }})</label>
+      <input type="number" name="daily_send_cap" value="{{ v.daily_send_cap }}" min="0" max="{{ hard_max }}" style="width:110px">
+      <label>Signature</label>
+      <input type="text" name="signature" value="{{ v.signature }}">
+      <label>Pitch</label>
+      <textarea name="user_pitch" style="min-height:60px">{{ v.user_pitch }}</textarea>
+      <label>Subject</label>
+      <input type="text" name="email_subject_template" value="{{ v.email_subject_template }}">
+      <label>Body<br><span class="muted" style="font-size:11px">opt-out footer is always auto-appended</span></label>
+      <textarea name="email_body_template">{{ v.email_body_template }}</textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">🔥 Scoring</h2>
+    <div class="tiles">
+      <div class="tile-stat"><input type="text" name="score_velocity_weight" value="{{ v.score_velocity_weight }}" style="text-align:center"><span>velocity ×</span></div>
+      <div class="tile-stat"><input type="text" name="score_engagement_weight" value="{{ v.score_engagement_weight }}" style="text-align:center"><span>engagement ×</span></div>
+      <div class="tile-stat"><input type="text" name="score_recency_weight" value="{{ v.score_recency_weight }}" style="text-align:center"><span>recency ×</span></div>
+      <div class="tile-stat"><input type="text" name="score_comment_weight" value="{{ v.score_comment_weight }}" style="text-align:center"><span>comment ×</span></div>
+      <div class="tile-stat"><input type="text" name="recency_window_days" value="{{ v.recency_window_days }}" style="text-align:center"><span>recency days</span></div>
+    </div>
+  </div>
+  <button class="primary" type="submit">💾 Save</button>
+</form>
+</div>
+{% endblock %}

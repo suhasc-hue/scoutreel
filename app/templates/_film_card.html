@@ -1,0 +1,82 @@
+<div class="fcard" id="film-card-{{ r.film.id }}">
+  <div class="tile">
+    {% if r.film.thumbnail_url %}
+      <img src="{{ r.film.thumbnail_url | yt_thumb('hq') }}" alt="" loading="lazy"
+           onerror="this.onerror=null;this.src='{{ r.film.thumbnail_url }}'">
+    {% else %}
+      <div class="ph" style="background:linear-gradient(135deg,
+           hsl({{ (r.film.id * 67) % 360 }},42%,24%),
+           hsl({{ (r.film.id * 67 + 50) % 360 }},48%,11%))">
+        <span>{{ r.film.title[:1] | upper }}</span>
+      </div>
+    {% endif %}
+    <a class="cover-link" href="/film/{{ r.film.id }}" aria-label="{{ r.film.title }}"></a>
+    {% if r.score %}
+      <span class="chip score {{ 'hot' if max_score and r.score.total_score >= max_score * 0.66 else '' }}"
+            title="virality score {{ '%.1f'|format(r.score.total_score) }}">{{ '%.1f'|format(r.score.total_score) }}</span>
+    {% endif %}
+    <span class="dot s-{{ r.film.status }}" title="{{ r.film.status }}"></span>
+
+    <div class="hpanel">
+      <div class="hbtns">
+        <a class="hbtn play" href="{{ r.film.url }}" target="_blank" rel="noopener" title="Watch on {{ r.film.source }}">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>
+        </a>
+        {% if r.film.status != 'shortlisted' %}
+        <form class="inline" hx-post="/films/{{ r.film.id }}/status" hx-target="#film-card-{{ r.film.id }}" hx-swap="outerHTML">
+          <input type="hidden" name="status" value="shortlisted">
+          <button class="hbtn" title="Add to shortlist" aria-label="Add to shortlist">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </form>
+        {% endif %}
+        {% if r.film.status != 'rejected' %}
+        <form class="inline" hx-post="/films/{{ r.film.id }}/status" hx-target="#film-card-{{ r.film.id }}" hx-swap="outerHTML">
+          <input type="hidden" name="status" value="rejected">
+          <button class="hbtn bad" title="Not interested" aria-label="Not interested">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+            </svg>
+          </button>
+        </form>
+        {% endif %}
+        <a class="hbtn more" href="/film/{{ r.film.id }}" title="More info" aria-label="More info">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </a>
+      </div>
+      <div class="hmeta">
+        {% if r.match %}<b class="match">{{ r.match }}% Match</b>{% endif %}
+        {% if r.film.duration_seconds %}<span>{{ (r.film.duration_seconds / 60) | round | int }}m</span>{% endif %}
+        {% if r.film.language %}<span class="lang-badge">{{ r.film.language[:3] }}</span>{% endif %}
+      </div>
+      <div class="htags">
+        {%- if r.film.genre %}{{ r.film.genre.title() }}{% endif %}
+        {%- if r.film.genre and r.film.language %}<i>•</i>{% endif %}
+        {%- if r.film.language %}{{ r.film.language.title() }}{% endif %}
+        {%- if r.film.film_school %}<i>•</i>Film School{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="fmeta">
+    <div class="ftitle-s" title="{{ r.film.title }}">{{ r.film.title }}</div>
+    <div class="frow">
+      <span class="ellip">{{ r.film.channel.name if r.film.channel else '?' }}</span>
+      <span class="sep">·</span>
+      <span>{{ (r.film.channel.subscriber_count if r.film.channel else 0) | compact }} subs</span>
+      <span class="sep">·</span>
+      <span>{{ r.views | compact }} views</span>
+      {% if r.contact_count %}
+      <svg class="mail-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-label="contact found">
+        <rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>
+      </svg>
+      {% endif %}
+      {% if r.sparkline %}
+      <span class="spark" title="views/hr trend">
+        <svg width="56" height="16" viewBox="0 0 120 28" preserveAspectRatio="none">
+          <polyline points="{{ r.sparkline }}" fill="none" stroke="#e50914" stroke-width="2.5"/>
+        </svg>
+      </span>
+      {% endif %}
+    </div>
+  </div>
+</div>

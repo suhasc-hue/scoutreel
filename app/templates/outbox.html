@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% set active = 'outbox' %}
+{% block title %}Outbox — ScoutReel{% endblock %}
+{% block content %}
+<div class="page-pad page-top">
+<div class="toolbar">
+  <h1 style="margin:0">Outbox</h1>
+  <span class="count" title="sent today / daily cap">{{ sent_today }}/{{ cap }} today</span>
+</div>
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+
+{% if drafts %}
+  {% for e in drafts %}
+  <div class="card" style="border-left: 4px solid {{ 'var(--green)' if e.status == 'approved' else 'var(--border)' }}">
+    <div class="frow" style="margin-bottom:10px; font-size:13px">
+      <span class="badge {{ e.status }}">{{ e.status }}</span>
+      {% if e.is_followup %}<span class="badge replied">follow-up</span>{% endif %}
+      <strong style="color:var(--text)">{{ e.contact.email }}</strong>
+      {% if e.contact.confidence == 'inferred' %}<span title="inferred contact">⚠</span>{% endif %}
+      <a href="/film/{{ e.film.id }}" class="ellip">🎬 {{ e.film.title }}</a>
+      <span style="margin-left:auto">{{ e.created_at.strftime('%b %d %H:%M') }}</span>
+    </div>
+    <form method="post" action="/outreach/{{ e.id }}/update" id="upd-{{ e.id }}">
+      <input type="text" name="subject" value="{{ e.subject }}" style="margin-bottom:8px; font-weight:600">
+      <textarea name="body">{{ e.body }}</textarea>
+    </form>
+    <div style="margin-top:10px; display:flex; gap:8px">
+      <button type="submit" form="upd-{{ e.id }}" title="saving puts it back to draft">💾 Save</button>
+      {% if e.status == 'draft' %}
+      <form class="inline" method="post" action="/outreach/{{ e.id }}/approve">
+        <button class="good">✓ Approve</button>
+      </form>
+      {% elif e.status == 'approved' %}
+      <form class="inline" method="post" action="/outreach/{{ e.id }}/send"
+            onsubmit="return confirm('Send from your Gmail now?')">
+        <button class="primary">📤 Send</button>
+      </form>
+      {% elif e.status == 'sending' %}
+      <span class="badge sending">⏳ sending…</span>
+      {% endif %}
+      {% if e.status in ('draft', 'approved') %}
+      <form class="inline" method="post" action="/outreach/{{ e.id }}/delete"
+            onsubmit="return confirm('Delete this draft?')" style="margin-left:auto">
+        <button class="bad">🗑</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+<div class="card muted">No drafts — create one from a film page.</div>
+{% endif %}
+
+{% if sent %}
+<h2>Sent</h2>
+<div class="card">
+  {% for e in sent %}
+  <div style="display:flex; gap:10px; align-items:center; padding:7px 0; {{ 'border-top:1px solid var(--border)' if not loop.first else '' }}">
+    <span class="badge {{ e.status }}">{{ e.status }}{{ ' 💬' if e.status == 'replied' else '' }}</span>
+    <strong>{{ e.contact.email }}</strong>
+    <a href="/film/{{ e.film.id }}" class="ellip muted">🎬 {{ e.film.title }}</a>
+    <span class="muted" style="margin-left:auto; font-size:12px">{{ e.sent_at.strftime('%b %d %H:%M') if e.sent_at else '—' }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+</div>
+{% endblock %}

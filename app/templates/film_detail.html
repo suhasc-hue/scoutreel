@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% set active = 'films' %}
+{% block title %}{{ r.film.title }} — ScoutReel{% endblock %}
+{% block content %}
+{% set f = r.film %}
+<div class="billboard" style="max-height:58vh; min-height:360px;
+     background-image:
+       {%- if f.thumbnail_url %} url('{{ f.thumbnail_url | yt_thumb('maxres') }}'), url('{{ f.thumbnail_url | yt_thumb('sd') }}'), url('{{ f.thumbnail_url }}')
+       {%- else %} linear-gradient(135deg, hsl({{ (f.id * 67) % 360 }},45%,26%), hsl({{ (f.id * 67 + 50) % 360 }},50%,10%))
+       {%- endif %}">
+  <div class="bb-shade"></div>
+  <div class="bb-fade"></div>
+  <div class="bb-content" style="bottom:8%">
+    <h1 class="bb-title" style="margin-bottom:10px">{{ f.title }}</h1>
+    <div class="bb-meta">
+      {% if r.match %}<b class="match">{{ r.match }}% Match</b>{% endif %}
+      {% if f.published_at %}<span>{{ f.published_at.strftime('%Y') }}</span>{% endif %}
+      {% if f.duration_seconds %}<span>{{ (f.duration_seconds / 60) | round | int }}m</span>{% endif %}
+      {% if f.language %}<span class="lang-badge">{{ f.language }}</span>{% endif %}
+      <span class="idot dot s-{{ f.status }}"></span><span>{{ f.status }}</span>
+    </div>
+    <div class="bb-actions">
+      <a class="btn-play" href="{{ f.url }}" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M7 5v14l12-7z"/></svg> Watch
+      </a>
+      <form class="inline" method="post" action="/films/{{ f.id }}/status">
+        <input type="hidden" name="status" value="shortlisted">
+        <button class="btn-glass">＋ Shortlist</button>
+      </form>
+      <form class="inline" method="post" action="/films/{{ f.id }}/status">
+        <input type="hidden" name="status" value="rejected">
+        <button class="btn-glass">✕ Reject</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="page-pad" style="margin-top:-10px; position:relative; z-index:3">
+{% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if info %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ info }}</div>{% endif %}
+
+<div class="grid2" style="grid-template-columns: 1.7fr 1fr">
+  <div>
+    {% if f.description %}
+    <p style="font-size:14.5px; line-height:1.55; color:#ddd; max-width:68ch; margin-top:6px; white-space:pre-line">{{ f.description[:500] }}{% if f.description|length > 500 %}…{% endif %}</p>
+    {% endif %}
+    <div class="tiles" style="margin:16px 0">
+      <div class="tile-stat hl"><b>{{ '%.1f'|format(r.score.total_score) if r.score else '—' }}</b><span>score</span></div>
+      <div class="tile-stat"><b>{{ (r.score.velocity_score | round | int | compact) if r.score else '—' }}</b><span>views/hr</span></div>
+      <div class="tile-stat"><b>{{ r.views | compact }}</b><span>views</span></div>
+      <div class="tile-stat"><b>{{ (r.stats[-1].likes if r.stats else 0) | compact }}</b><span>likes</span></div>
+      <div class="tile-stat"><b>{{ (r.stats[-1].comments if r.stats else 0) | compact }}</b><span>comments</span></div>
+    </div>
+    {% if r.stats|length >= 2 %}
+    {% set peak = r.stats|map(attribute='views')|max %}
+    <div class="card">
+      <svg width="100%" height="130" viewBox="0 0 400 130" preserveAspectRatio="none" style="display:block">
+        <defs>
+          <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#e50914" stop-opacity=".4"/>
+            <stop offset="100%" stop-color="#e50914" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon fill="url(#fade)" points="0,125
+          {%- for st in r.stats %} {{ (loop.index0 / (r.stats|length - 1) * 400)|round(1) }},{{ (120 - (st.views / (peak or 1)) * 105)|round(1) }}{% endfor %} 400,125"/>
+        <polyline fill="none" stroke="#e50914" stroke-width="2.5" points="
+          {%- for st in r.stats %} {{ (loop.index0 / (r.stats|length - 1) * 400)|round(1) }},{{ (120 - (st.views / (peak or 1)) * 105)|round(1) }}{% endfor %}"/>
+      </svg>
+      <div class="frow" style="font-size:12px"><span>views over time</span>
+        <span style="margin-left:auto">{{ r.stats[0].captured_at.strftime('%b %d %H:%M') }} → {{ r.stats[-1].captured_at.strftime('%b %d %H:%M') }}</span></div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    {% if credits %}
+    <div class="card" style="margin-top:6px">
+      <div class="frow" style="margin-bottom:8px; font-size:13px"><strong style="color:#fff">Credits</strong>
+        <span class="muted" style="margin-left:auto; font-size:11px">auto-extracted</span></div>
+      <div style="display:grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size:13px">
+        {% for role in ['Director','Writer','DOP','Producer','Editor','Music','Sound','Cast','Production','VFX','Art Director','Colorist','Costume'] %}
+          {% if credits.get(role) %}
+          <span class="muted">{{ 'Cinematography' if role == 'DOP' else role }}</span>
+          <span style="color:#e5e5e5">{{ credits[role] | join(', ') }}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    <div style="font-size:13.5px; line-height:2; margin-top:6px">
+      <div><span class="muted">Channel:</span>
+        <a href="{{ f.channel.url }}" target="_blank" rel="noopener" style="color:#fff">{{ f.channel.name if f.channel else '?' }}</a>
+        <span class="muted">({{ (f.channel.subscriber_count if f.channel else 0) | compact }} subs)</span></div>
+      {% if country_name %}<div><span class="muted">Country:</span> {{ country_name }}{% if region %} <span class="muted">· {{ region }}</span>{% endif %}</div>{% endif %}
+      {% if f.genre %}<div><span class="muted">Genre:</span> {{ f.genre.title() }}</div>{% endif %}
+      {% if f.language %}<div><span class="muted">Language:</span> {{ f.language.title() }}</div>{% endif %}
+      {% if f.is_festival or f.is_award or f.film_school %}
+      <div><span class="muted">Tags:</span>
+        {% if f.is_festival %}<span class="badge approved">Festival</span>{% endif %}
+        {% if f.is_award %}<span class="badge replied">Award</span>{% endif %}
+        {% if f.film_school %}<span class="badge sent">Film School</span>{% endif %}
+      </div>
+      {% endif %}
+      <div><span class="muted">Discovered:</span> {{ f.discovered_at.strftime('%b %d, %Y') if f.discovered_at else '?' }}</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="frow" style="margin-bottom:8px; font-size:13px">
+        <strong style="color:#fff">Contacts</strong>
+      </div>
+      {% if contacts %}
+        {% for row in contacts %}
+        <div style="display:flex; align-items:center; gap:9px; padding:7px 0; border-top:1px solid var(--border); flex-wrap:wrap">
+          <span class="idot dot {{ 'opted_out' if row.dnc else ('s-shortlisted' if row.contact.confidence == 'listed_business' else 's-contacted') }}"
+                title="{{ 'do not contact' if row.dnc else row.contact.confidence }}"></span>
+          <span style="font-size:13px">{{ row.contact.email }}</span>
+          <span class="muted" style="font-size:11.5px">{{ row.contact.source_of_email }}</span>
+          {% if row.dnc %}
+            <span class="badge opted_out">DNC</span>
+          {% else %}
+            <form method="post" action="/film/{{ f.id }}/draft" class="inline" style="margin-left:auto">
+              <input type="hidden" name="contact_id" value="{{ row.contact.id }}">
+              {% if row.contact.confidence == 'inferred' %}
+                <label title="business-contact status was inferred, not explicit — confirm to draft" style="font-size:12px">
+                  ⚠ <input type="checkbox" name="confirm_inferred" value="yes" style="width:auto"></label>
+              {% endif %}
+              <button class="primary" style="padding:5px 12px">✉ Draft</button>
+            </form>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="muted" style="margin:4px 0">None found yet.</p>
+      {% endif %}
+      {% if leads %}
+      <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px">
+        <div class="muted" style="font-size:11.5px; margin-bottom:4px">Leads found on the web (open manually — not auto-crawled):</div>
+        {% for lead in leads %}
+        <div style="font-size:12.5px; padding:2px 0">
+          <a href="{{ lead.url }}" target="_blank" rel="noopener" class="ellip" style="display:inline-block; max-width:100%">{{ lead.title or lead.url }}</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <form method="post" action="/film/{{ f.id }}/find-contacts" style="margin-top:10px">
+        <button {{ 'disabled' if crawling else '' }}>{{ '⏳ Searching…' if crawling else '🔎 Find contacts' }}</button>
+        <span class="muted" style="font-size:11px">channel → videos → bio links{{ ' → web search' if true }}</span>
+      </form>
+    </div>
+
+    {% if emails %}
+    <div class="card">
+      <div class="frow" style="margin-bottom:6px; font-size:13px"><strong style="color:#fff">Outreach</strong></div>
+      {% for e in emails %}
+      <div style="display:flex; gap:8px; align-items:center; padding:6px 0; border-top:1px solid var(--border); font-size:12.5px">
+        <span class="badge {{ e.status }}">{{ e.status }}</span>
+        <span class="ellip muted">{{ e.contact.email }}</span>
+        <span class="muted" style="margin-left:auto; font-size:11.5px">{{ e.created_at.strftime('%b %d') }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if similar %}
+<h2 style="margin-top:30px">More Like This</h2>
+<div class="grid">
+  {% for r in similar %}{% include "_film_card.html" %}{% endfor %}
+</div>
+{% endif %}
+</div>
+{% endblock %}
