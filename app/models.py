@@ -116,6 +116,21 @@ class Contact(Base):
     channel: Mapped[Channel] = relationship(back_populates="contacts")
 
 
+class MailAccount(Base):
+    """A connected Gmail sender. Several people can each connect their own
+    account; every outreach email records which account sends it."""
+
+    __tablename__ = "mail_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(String(128), default="")
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    token_file: Mapped[str] = mapped_column(String(256))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ContactLead(Base):
     """Web pages that likely hold contact info but are never auto-crawled
     (LinkedIn, IMDb, ...) — surfaced to the user as manual leads."""
@@ -153,6 +168,10 @@ class OutreachEmail(Base):
     unread: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     last_reply_snippet: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_reply_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # which connected Gmail account sends/sent this (None = default account)
+    sender_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("mail_accounts.id"), nullable=True, index=True
+    )
 
     contact: Mapped[Contact] = relationship()
     film: Mapped[Film] = relationship()

@@ -6,3 +6,5 @@ __pycache__/
 scoutreel.db
 token.json
 credentials.json
+tokens/
+backups/

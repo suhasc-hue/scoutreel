@@ -158,6 +158,9 @@ def _row(
 
     match = _match_pct(score.total_score if score else None, population or [])
     stars = stars_for_match(match)
+    if stars == 0 and film.quality_score:
+        # no velocity data yet — rate on editorial quality instead
+        stars = min(5, max(1, round(film.quality_score / 2)))
     return {
         "film": film,
         "score": score,
@@ -226,10 +229,24 @@ def _subqueries(db: Session):
     return score_sq, views_sq
 
 
+_population_cache: dict = {"at": 0.0, "data": []}
+_POPULATION_TTL_S = 300
+
+
 def _score_population(db: Session) -> list[float]:
-    """Sorted latest total_score per film — the basis for match percentiles."""
-    score_sq, _ = _subqueries(db)
-    return sorted(t for (t,) in db.query(score_sq.c.total).all() if t is not None)
+    """Sorted latest total_score per film — the basis for match percentiles.
+    Cached for a few minutes; at library scale this query is too heavy to run
+    on every request."""
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _population_cache["at"] > _POPULATION_TTL_S:
+        score_sq, _ = _subqueries(db)
+        _population_cache["data"] = sorted(
+            t for (t,) in db.query(score_sq.c.total).all() if t is not None
+        )
+        _population_cache["at"] = now
+    return _population_cache["data"]
 
 
 def _build_view_models(db: Session, films: list[Film]) -> dict[int, dict]:
@@ -351,6 +368,27 @@ def films_page(
             if len(films) >= MIN_ROW_FILMS:
                 row_defs.append(
                     (label, f"/films?status=active&sort=score&region={codes[0] if len(codes)==1 else label}", films)
+                )
+        # channel rows — sources with deep catalogues get their own shelf
+        top_channels = (
+            db.query(Film.channel_id, func.count(Film.id).label("n"))
+            .filter(Film.status.in_(("new", "shortlisted")),
+                    Film.quality_score >= quality_floor)
+            .group_by(Film.channel_id)
+            .having(func.count(Film.id) >= 20)
+            .order_by(func.count(Film.id).desc())
+            .limit(4)
+            .all()
+        )
+        for ch_id, _n in top_channels:
+            ch = db.get(Channel, ch_id)
+            if ch is None or not ch.name:
+                continue
+            films = active.filter(Film.channel_id == ch_id).order_by(*by_heat).limit(ROW_LIMIT).all()
+            if len(films) >= MIN_ROW_FILMS:
+                row_defs.append(
+                    (f"From {ch.name}",
+                     f"/films?status=active&sort=score&q={quote(ch.name)}", films)
                 )
         for g in GENRE_ROW_ORDER:
             if g == "animation":
@@ -765,6 +803,8 @@ def outbox(request: Request, db: Session = Depends(get_db)):
         .order_by(OutreachEmail.sent_at.desc())
         .all()
     )
+    from app.models import MailAccount
+
     return templates.TemplateResponse(
         request,
         "outbox.html",
@@ -773,6 +813,7 @@ def outbox(request: Request, db: Session = Depends(get_db)):
             "sent": sent,
             "sent_today": sent_today_count(db),
             "cap": effective_daily_cap(db),
+            "mail_accounts": db.query(MailAccount).filter_by(active=True).all(),
             "error": request.query_params.get("error", ""),
         },
     )
@@ -840,10 +881,26 @@ def _perform_send(db: Session, email_id: int, interactive: bool = True) -> str |
         logger.error("GUARDRAIL BLOCKED send #{}: {}", email_id, exc)
         return f"Blocked: {exc}"
 
-    from app.outreach.gmail_client import GmailClient
+    from app.models import MailAccount
+    from app.outreach.gmail_client import GmailClient, client_for_account
 
+    account = None
+    if email_obj.sender_account_id:
+        account = db.get(MailAccount, email_obj.sender_account_id)
+    if account is None:
+        account = (
+            db.query(MailAccount).filter_by(active=True, is_default=True).first()
+            or db.query(MailAccount).filter_by(active=True).first()
+        )
+        if account is not None:
+            email_obj.sender_account_id = account.id
+            db.commit()
     try:
-        client = GmailClient(interactive=interactive)
+        client = (
+            client_for_account(account, interactive=interactive)
+            if account is not None
+            else GmailClient(interactive=interactive)  # legacy token.json fallback
+        )
         result = client.send_email(
             to=email_obj.contact.email, subject=email_obj.subject, body=email_obj.body
         )
@@ -966,7 +1023,8 @@ def _channel_card(db: Session, channel: Channel, vms_by_channel: dict) -> dict:
 
 
 def _best_film_vms(db: Session, channels: list[Channel]) -> dict[int, dict]:
-    """Highest-scored (else most-viewed) film per channel, as a view model."""
+    """Highest-scored (else most-viewed) film per channel, as a view model.
+    Capped — aggregator channels can hold thousands of films."""
     ids = [c.id for c in channels]
     if not ids:
         return {}
@@ -974,6 +1032,8 @@ def _best_film_vms(db: Session, channels: list[Channel]) -> dict[int, dict]:
         db.query(Film)
         .options(joinedload(Film.channel))
         .filter(Film.channel_id.in_(ids), Film.status != "rejected")
+        .order_by(Film.quality_score.desc())
+        .limit(800)
         .all()
     )
     vms = _build_view_models(db, films)
@@ -1291,8 +1351,9 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)):
-    from app.models import SeedChannel
+    from app.models import MailAccount, SeedChannel
 
+    mail_accounts = db.query(MailAccount).order_by(MailAccount.created_at).all()
     s = get_settings()
     queries = db.query(SeedQuery).order_by(SeedQuery.added_at).all()
     seed_channels = db.query(SeedChannel).order_by(SeedChannel.added_at).all()
@@ -1305,7 +1366,8 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         "email_body_template": get_setting(db, "email_body_template", DEFAULT_TEMPLATE),
         "bulk_body_template": get_setting(db, "bulk_body_template", DEFAULT_BULK_TEMPLATE),
         "quality_floor": get_setting(db, "quality_floor", "2"),
-        "harvest_pages_per_channel": get_setting(db, "harvest_pages_per_channel", "2"),
+        "harvest_pages_per_channel": get_setting(db, "harvest_pages_per_channel", "20"),
+        "snapshot_max_films": get_setting(db, "snapshot_max_films", "4000"),
         "score_velocity_weight": get_setting(db, "score_velocity_weight", str(s.score_velocity_weight)),
         "score_engagement_weight": get_setting(db, "score_engagement_weight", str(s.score_engagement_weight)),
         "score_recency_weight": get_setting(db, "score_recency_weight", str(s.score_recency_weight)),
@@ -1316,8 +1378,93 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
         request,
         "settings.html",
         {"queries": queries, "seed_channels": seed_channels, "dnc": dnc, "v": values,
-         "hard_max": 30, "error": request.query_params.get("error", "")},
+         "mail_accounts": mail_accounts, "oauth_result": _oauth_state.get("result", ""),
+         "hard_max": 30, "error": request.query_params.get("error", ""),
+         "info": request.query_params.get("info", "")},
     )
+
+
+# ---- multi-user Gmail accounts ----
+
+_oauth_state = {"running": False, "result": "", "label": ""}
+
+
+def _connect_account_background(label: str) -> None:
+    import uuid
+
+    from app.config import PROJECT_ROOT
+    from app.outreach.gmail_client import connect_new_account
+
+    try:
+        tokens_dir = PROJECT_ROOT / "tokens"
+        tokens_dir.mkdir(exist_ok=True)
+        token_file = str(tokens_dir / f"account_{uuid.uuid4().hex[:10]}.json")
+        email = connect_new_account(token_file)
+        with session_scope() as db:
+            from app.models import MailAccount
+
+            existing = db.query(MailAccount).filter_by(email=email).one_or_none()
+            if existing:
+                existing.token_file = token_file
+                existing.active = True
+                if label:
+                    existing.label = label
+                _oauth_state["result"] = f"Reconnected {email}."
+            else:
+                is_first = db.query(MailAccount).count() == 0
+                db.add(MailAccount(label=label or email, email=email,
+                                   token_file=token_file, is_default=is_first))
+                _oauth_state["result"] = f"Connected {email}."
+        logger.info("mail account connected: {}", email)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("mail account connect failed: {}", exc)
+        _oauth_state["result"] = f"Connect failed: {exc}"
+    finally:
+        _oauth_state["running"] = False
+
+
+@app.post("/settings/mail/connect")
+def connect_mail_account(label: str = Form("")):
+    if _oauth_state["running"]:
+        return _info("/settings", "A Google sign-in window is already open on this machine.")
+    _oauth_state.update(running=True, result="", label=label)
+    threading.Thread(target=_connect_account_background, args=(label,), daemon=True).start()
+    return _info(
+        "/settings",
+        "A Google sign-in window just opened on this computer — "
+        f"{label or 'the new user'} should pick their account and click Allow. "
+        "Refresh this page afterwards.",
+    )
+
+
+@app.post("/settings/mail/{account_id}/default")
+def set_default_account(account_id: int, db: Session = Depends(get_db)):
+    from app.models import MailAccount
+
+    for a in db.query(MailAccount).all():
+        a.is_default = a.id == account_id
+    db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/mail/{account_id}/toggle")
+def toggle_account(account_id: int, db: Session = Depends(get_db)):
+    from app.models import MailAccount
+
+    a = db.get(MailAccount, account_id)
+    if a:
+        a.active = not a.active
+        db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/outreach/{email_id}/sender")
+def set_email_sender(email_id: int, sender_account_id: int = Form(...), db: Session = Depends(get_db)):
+    e = db.get(OutreachEmail, email_id)
+    if e and e.status in ("draft", "approved"):
+        e.sender_account_id = sender_account_id or None
+        db.commit()
+    return RedirectResponse("/outbox", status_code=303)
 
 
 @app.post("/settings/channels/add")
@@ -1359,7 +1506,7 @@ async def save_settings(request: Request, db: Session = Depends(get_db)):
     allowed = {
         "daily_send_cap", "signature", "user_pitch",
         "email_subject_template", "email_body_template", "bulk_body_template",
-        "quality_floor", "harvest_pages_per_channel",
+        "quality_floor", "harvest_pages_per_channel", "snapshot_max_films",
         "score_velocity_weight", "score_engagement_weight",
         "score_recency_weight", "score_comment_weight", "recency_window_days",
     }

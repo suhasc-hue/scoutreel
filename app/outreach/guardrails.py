@@ -49,8 +49,22 @@ def is_do_not_contact(db: Session, email_address: str) -> bool:
     )
 
 
+def _account_filter(q, account_id: int | None, use_sentinel: bool):
+    """Scope a query to one sender account. Caps and spacing are per
+    connected Gmail account — each sender has their own daily budget."""
+    if not use_sentinel:
+        return q
+    if account_id is None:
+        return q.filter(OutreachEmail.sender_account_id.is_(None))
+    return q.filter(OutreachEmail.sender_account_id == account_id)
+
+
 def sent_today_count(
-    db: Session, now: datetime | None = None, exclude_id: int | None = None
+    db: Session,
+    now: datetime | None = None,
+    exclude_id: int | None = None,
+    account_id: int | None = None,
+    per_account: bool = False,
 ) -> int:
     """Sends today plus in-flight 'sending' claims (so concurrent claims can
     never overshoot the cap). Query params are naive UTC to match how SQLite
@@ -63,18 +77,18 @@ def sent_today_count(
             OutreachEmail.status == "sending",
         )
     )
+    q = _account_filter(q, account_id, per_account)
     if exclude_id is not None:
         q = q.filter(OutreachEmail.id != exclude_id)
     return q.count()
 
 
-def last_send_at(db: Session) -> datetime | None:
-    row = (
-        db.query(OutreachEmail.sent_at)
-        .filter(OutreachEmail.sent_at.isnot(None))
-        .order_by(OutreachEmail.sent_at.desc())
-        .first()
-    )
+def last_send_at(
+    db: Session, account_id: int | None = None, per_account: bool = False
+) -> datetime | None:
+    q = db.query(OutreachEmail.sent_at).filter(OutreachEmail.sent_at.isnot(None))
+    q = _account_filter(q, account_id, per_account)
+    row = q.order_by(OutreachEmail.sent_at.desc()).first()
     return row[0] if row else None
 
 
@@ -107,11 +121,12 @@ def assert_can_send(
         raise GuardrailViolation(f"{address} is on the do-not-contact list")
 
     cap = effective_daily_cap(db)
-    sent = sent_today_count(db, now, exclude_id=email_obj.id)
+    sent = sent_today_count(db, now, exclude_id=email_obj.id,
+                            account_id=email_obj.sender_account_id, per_account=True)
     if sent >= cap:
-        raise GuardrailViolation(f"daily send cap reached ({sent}/{cap})")
+        raise GuardrailViolation(f"daily send cap reached for this account ({sent}/{cap})")
 
-    last = last_send_at(db)
+    last = last_send_at(db, account_id=email_obj.sender_account_id, per_account=True)
     if last is not None and now - _as_utc(last) < MIN_SPACING:
         wait_s = int((MIN_SPACING - (now - _as_utc(last))).total_seconds())
         raise GuardrailViolation(

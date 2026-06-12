@@ -165,6 +165,18 @@ def _extract_plain_text(payload: dict) -> str:
     return ""
 
 
+def client_for_account(account, interactive: bool = False) -> "GmailClient":
+    """GmailClient bound to a connected MailAccount's token file."""
+    return GmailClient(token_file=account.token_file, interactive=interactive)
+
+
+def connect_new_account(token_file: str) -> str:
+    """Run the interactive OAuth flow into a fresh token file and return the
+    authorized email address. Opens a browser on this machine."""
+    client = GmailClient(token_file=token_file, interactive=True)
+    return client.my_address()
+
+
 def reply_requests_unsubscribe(reply: ThreadReply) -> bool:
     text = f"{reply.snippet}\n{reply.body_text}".lower()
     return "unsubscribe" in text or "don't contact" in text or "do not contact" in text

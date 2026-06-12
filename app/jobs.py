@@ -248,7 +248,9 @@ def harvest_seed_channel(
 
 
 def harvest_job() -> None:
-    """Recurring sweep of curated source channels for fresh uploads."""
+    """Recurring sweep of curated source channels: one fresh page (new
+    uploads) plus a deep continuation of the catalogue walk, so the library
+    keeps growing toward the full back-catalogue of every source."""
     from app.models import SeedChannel
     from app.outreach.drafts import get_setting
 
@@ -259,20 +261,62 @@ def harvest_job() -> None:
     with session_scope() as db:
         ensure_seed_channels(db)
         try:
-            pages = int(get_setting(db, "harvest_pages_per_channel", "2"))
+            pages = int(get_setting(db, "harvest_pages_per_channel", "20"))
         except ValueError:
-            pages = 2
+            pages = 20
         adapter = YouTubeAdapter()
         total = 0
         for seed in db.query(SeedChannel).filter_by(enabled=True).all():
             try:
-                total += harvest_seed_channel(db, adapter, seed, max_pages=pages)
+                total += harvest_seed_channel(db, adapter, seed, max_pages=1, resume=False)
+                if seed.next_page_token is not None or seed.last_harvested_at is None:
+                    total += harvest_seed_channel(db, adapter, seed, max_pages=pages, resume=True)
             except QuotaExceeded as exc:
                 logger.warning("harvest stopped, quota exhausted: {}", exc)
                 break
             except Exception as exc:  # noqa: BLE001
                 logger.error("harvest failed for {}: {}", seed.handle, exc)
         logger.info("harvest done: {} new films", total)
+
+
+def expand_sources_job() -> None:
+    """Channel-discovery flywheel: any channel whose films keep passing the
+    quality bar becomes a curated source itself, so its whole catalogue gets
+    harvested. This is what scales the library beyond the hand-picked seeds."""
+    from sqlalchemy import func as sqlfunc
+
+    from app.models import SeedChannel
+
+    with session_scope() as db:
+        existing_refs = {
+            s.channel_ref for s in db.query(SeedChannel).all() if s.channel_ref
+        } | {s.handle for s in db.query(SeedChannel).all()}
+        candidates = (
+            db.query(Channel, sqlfunc.count(Film.id).label("n"))
+            .join(Film, Film.channel_id == Channel.id)
+            .filter(Film.quality_score >= 3, Film.status != "rejected")
+            .group_by(Channel.id)
+            .having(sqlfunc.count(Film.id) >= 3)
+            .order_by(sqlfunc.count(Film.id).desc())
+            .limit(200)
+            .all()
+        )
+        added = 0
+        for channel, _n in candidates:
+            if channel.source_channel_id in existing_refs:
+                continue
+            db.add(SeedChannel(
+                handle=channel.source_channel_id,
+                label=f"{channel.name} (auto)",
+                channel_ref=channel.source_channel_id,
+            ))
+            existing_refs.add(channel.source_channel_id)
+            added += 1
+            if added >= 25:  # bounded growth per run
+                break
+        db.commit()
+        if added:
+            logger.info("expand: promoted {} productive channels to sources", added)
 
 
 # ---------- stats snapshots + scoring ----------
@@ -284,11 +328,26 @@ def snapshot_job() -> None:
         return
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.tracking_window_days)
     with session_scope() as db:
-        films = (
+        from app.outreach.drafts import get_setting
+
+        # At library scale we can't snapshot everything — budget the tracked
+        # set: newest publishes first (that's where velocity matters), then
+        # shortlisted films always.
+        try:
+            budget = int(get_setting(db, "snapshot_max_films", "4000"))
+        except ValueError:
+            budget = 4000
+        shortlisted = (
+            db.query(Film).filter(Film.status == "shortlisted").all()
+        )
+        fresh = (
             db.query(Film)
-            .filter(Film.status.in_(("new", "shortlisted")), Film.discovered_at >= cutoff)
+            .filter(Film.status == "new", Film.discovered_at >= cutoff)
+            .order_by(Film.published_at.desc().nullslast())
+            .limit(max(budget - len(shortlisted), 0))
             .all()
         )
+        films = shortlisted + fresh
         if not films:
             logger.info("snapshot: nothing to track")
             return
@@ -497,15 +556,33 @@ def reply_poll_job() -> None:
         )
         if not watched:
             return
-        try:
-            client = GmailClient(interactive=False)
-            me = client.my_address()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("reply poll skipped (Gmail not authorized — run `make gmail-auth`): {}", exc)
-            return
+        from app.models import MailAccount
+        from app.outreach.gmail_client import client_for_account
+
+        accounts = {a.id: a for a in db.query(MailAccount).filter_by(active=True)}
+        clients: dict[int | None, tuple] = {}  # account_id -> (client, my_address)
+
+        def get_client(account_id):
+            if account_id not in clients:
+                try:
+                    if account_id is not None and account_id in accounts:
+                        c = client_for_account(accounts[account_id])
+                    else:
+                        default = next((a for a in accounts.values() if a.is_default), None)
+                        c = client_for_account(default) if default else GmailClient(interactive=False)
+                    clients[account_id] = (c, c.my_address())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("reply poll: account {} unavailable: {}", account_id, exc)
+                    clients[account_id] = None
+            return clients[account_id]
+
         from app.crm import auto_advance
 
         for email_obj in watched:
+            pair = get_client(email_obj.sender_account_id)
+            if pair is None:
+                continue
+            client, me = pair
             try:
                 replies = client.get_thread_replies(email_obj.gmail_thread_id, me)
             except Exception as exc:  # noqa: BLE001
@@ -558,6 +635,8 @@ def main() -> None:
     sched = BlockingScheduler(timezone="UTC")
     sched.add_job(harvest_job, "interval", hours=6, id="harvest",
                   next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1))
+    sched.add_job(expand_sources_job, "interval", hours=6, id="expand",
+                  next_run_time=datetime.now(timezone.utc) + timedelta(minutes=30))
     sched.add_job(discovery_job, "interval", hours=6, id="discovery",
                   next_run_time=datetime.now(timezone.utc))
     sched.add_job(snapshot_job, "interval", hours=6, id="snapshot",

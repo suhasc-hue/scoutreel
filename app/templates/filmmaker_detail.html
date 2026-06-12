@@ -39,8 +39,15 @@
           <span class="idot dot {{ 'opted_out' if row.dnc else ('s-shortlisted' if row.contact.confidence == 'listed_business' else 's-contacted') }}"></span>
           <span style="font-size:13.5px; user-select:all">{{ row.contact.email }}</span>
           <button type="button" class="copybtn" data-email="{{ row.contact.email }}" title="Copy email">⧉ Copy</button>
+          <a class="btn copybtn" style="text-decoration:none" href="mailto:{{ row.contact.email }}" title="Open in your mail app">✉ Mail</a>
           <span class="muted" style="font-size:11.5px">{{ row.contact.source_of_email }}</span>
-          {% if row.dnc %}<span class="badge opted_out">DNC</span>{% endif %}
+          {% if row.dnc %}<span class="badge opted_out">DNC</span>
+          {% elif row.contact.confidence != 'inferred' %}
+          <form method="post" action="/filmmakers/bulk-draft" class="inline" style="margin-left:auto">
+            <input type="hidden" name="channel_id" value="{{ c.id }}">
+            <button class="primary" style="padding:3px 10px; font-size:12px">Draft</button>
+          </form>
+          {% endif %}
         </div>
         {% endfor %}
       {% else %}

@@ -5,6 +5,38 @@
 <div class="page-pad page-top">
 <h1 style="margin-top:0">Settings</h1>
 {% if error %}<div class="error">⛔ {{ error }}</div>{% endif %}
+{% if info %}<div class="card" style="border-left:4px solid var(--blue)">ℹ {{ info }}</div>{% endif %}
+{% if oauth_result %}<div class="card" style="border-left:4px solid var(--match)">✓ {{ oauth_result }}</div>{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0">📨 Mail accounts</h2>
+  <p class="muted" style="font-size:12px; margin:0 0 8px">
+    Each person connects their own Gmail. Drafts can pick a sender; daily caps
+    and send spacing apply per account. Needs <code>credentials.json</code> in
+    the project folder (one OAuth client covers all accounts).</p>
+  {% if mail_accounts %}
+    {% for a in mail_accounts %}
+    <div style="display:flex; gap:10px; align-items:center; padding:6px 0; {{ 'border-top:1px solid var(--border)' if not loop.first else '' }}">
+      <span class="idot dot {{ 's-shortlisted' if a.active else 's-rejected' }}"></span>
+      <strong>{{ a.label }}</strong>
+      <span class="muted">{{ a.email }}</span>
+      {% if a.is_default %}<span class="badge approved">default</span>{% endif %}
+      <span style="margin-left:auto; display:flex; gap:6px">
+        {% if not a.is_default %}
+        <form class="inline" method="post" action="/settings/mail/{{ a.id }}/default"><button>make default</button></form>
+        {% endif %}
+        <form class="inline" method="post" action="/settings/mail/{{ a.id }}/toggle"><button>{{ 'disable' if a.active else 'enable' }}</button></form>
+      </span>
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="muted">No Gmail accounts connected yet.</p>
+  {% endif %}
+  <form method="post" action="/settings/mail/connect" style="display:flex; gap:8px; margin-top:10px">
+    <input type="text" name="label" placeholder="who is this? e.g. Suhas">
+    <button class="primary">＋ Connect a Gmail</button>
+  </form>
+</div>
 
 <div class="grid2">
   <div class="card">
@@ -104,7 +136,9 @@
       <label>Quality floor (0–10)<br><span class="muted" style="font-size:11px">home page hides films below this</span></label>
       <input type="text" name="quality_floor" value="{{ v.quality_floor }}" style="width:110px">
       <label>Harvest pages / channel / run<br><span class="muted" style="font-size:11px">each page = 50 videos from a curated source</span></label>
-      <input type="number" name="harvest_pages_per_channel" value="{{ v.harvest_pages_per_channel }}" min="1" max="50" style="width:110px">
+      <input type="number" name="harvest_pages_per_channel" value="{{ v.harvest_pages_per_channel }}" min="1" max="100" style="width:110px">
+      <label>Velocity-tracked films<br><span class="muted" style="font-size:11px">newest publishes get snapshots; rest rate on quality</span></label>
+      <input type="number" name="snapshot_max_films" value="{{ v.snapshot_max_films }}" min="100" max="20000" style="width:110px">
     </div>
   </div>
 

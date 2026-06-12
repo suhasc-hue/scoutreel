@@ -26,7 +26,18 @@
       <strong style="color:var(--text)">{{ e.contact.email }}</strong>
       {% if e.contact.confidence == 'inferred' %}<span title="inferred contact">⚠</span>{% endif %}
       <a href="/film/{{ e.film.id }}" class="ellip">🎬 {{ e.film.title }}</a>
+      {% if mail_accounts %}
+      <form class="inline" method="post" action="/outreach/{{ e.id }}/sender" style="margin-left:auto">
+        <select name="sender_account_id" onchange="this.form.submit()" style="font-size:11.5px; padding:3px 6px" title="send from">
+          {% for a in mail_accounts %}
+          <option value="{{ a.id }}" {{ 'selected' if e.sender_account_id == a.id or (not e.sender_account_id and a.is_default) else '' }}>from: {{ a.label or a.email }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      <span>{{ e.created_at.strftime('%b %d %H:%M') }}</span>
+      {% else %}
       <span style="margin-left:auto">{{ e.created_at.strftime('%b %d %H:%M') }}</span>
+      {% endif %}
     </div>
     <form method="post" action="/outreach/{{ e.id }}/update" id="upd-{{ e.id }}">
       <input type="text" name="subject" value="{{ e.subject }}" style="margin-bottom:8px; font-weight:600">
