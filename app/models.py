@@ -61,6 +61,12 @@ class Film(Base):
     duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     thumbnail_url: Mapped[str] = mapped_column(String(512), default="")
+    # None = not yet checked; True = thumbnail loads; False = dead (video
+    # deleted/private → YouTube 404s the thumbnail). The home page hides dead
+    # posters so the showcase stays visually clean.
+    thumb_ok: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=None, index=True
+    )
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id"))
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     is_short_film: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -250,6 +250,45 @@
       .bb-content { max-width: 88%; }
       nav { gap: 12px; } .navsearch input { width: 110px; }
     }
+    /* ---- phones ---- */
+    @media (max-width: 640px) {
+      /* nav: a horizontal-scroll strip; search hidden to keep the hero clean */
+      nav { gap: 16px; height: 56px; overflow-x: auto; scrollbar-width: none;
+            -webkit-overflow-scrolling: touch; }
+      nav::-webkit-scrollbar { display: none; }
+      nav .logo { font-size: 18px; margin-right: 4px; flex: 0 0 auto; }
+      nav a.navlink { font-size: 13px; flex: 0 0 auto; }
+      .navsearch { display: none; }
+
+      /* billboard: immersive portrait hero with a bottom-up scrim */
+      .billboard { min-height: 64vh; aspect-ratio: auto; max-height: none;
+                   background-position: center; }
+      .bb-shade { background: linear-gradient(to top,
+                  rgba(20,20,20,.96) 14%, rgba(20,20,20,.5) 48%, transparent 78%); }
+      .bb-content { left: var(--pad); right: var(--pad); bottom: 10%; max-width: 100%; }
+      .bb-rank { margin-bottom: 9px; } .bb-rank span { font-size: 12.5px; }
+      .bb-title { font-size: 27px; margin-bottom: 10px; }
+      .bb-meta { font-size: 12.5px; gap: 9px; margin-bottom: 8px; }
+      .bb-syn { font-size: 13.5px; -webkit-line-clamp: 3; margin-bottom: 14px; }
+      .btn-play, .btn-glass { padding: 9px 15px; font-size: 13.5px; }
+
+      /* rails: smaller cards so ~2.5 show; clean posters (no hover overlay) */
+      .row-title { font-size: 15px; }
+      .nrow { margin: 2px 0 16px; }
+      .row-scroller { gap: 6px; -webkit-overflow-scrolling: touch; }
+      .row-scroller .fcard { flex: 0 0 150px; width: 150px; max-width: 150px; }
+      .fcard:hover .tile, .fcard:focus-within .tile {
+            transform: none; box-shadow: 0 2px 10px rgba(0,0,0,.5); z-index: auto; }
+      .hpanel { display: none; }
+      .tile .ph span { font-size: 36px; }
+      .ftitle-s { font-size: 12.5px; }
+      .frow { font-size: 10.5px; gap: 5px; }
+      .frow .spark { display: none; }
+
+      /* browse grid: two columns */
+      .grid { grid-template-columns: repeat(2, 1fr); gap: 18px 6px; }
+      .page-top { padding-top: 72px; }
+    }
   </style>
 </head>
 <body>
@@ -271,6 +310,14 @@
 {% block content %}{% endblock %}
 </main>
 <script>
+  /* Dead/deleted YouTube thumbnails 404 — degrade to the gradient placeholder
+     instead of a broken-image icon. Global so inline onerror can reach it. */
+  function thumbFallback(img) {
+    img.onerror = null;
+    img.style.display = 'none';
+    var ph = img.parentElement && img.parentElement.querySelector('.ph');
+    if (ph) ph.style.display = 'flex';
+  }
   (function () {
     var nav = document.getElementById('topnav');
     var hasBillboard = !!document.querySelector('.billboard');

@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
-from sqlalchemy import func, update
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
@@ -33,6 +33,7 @@ from app.models import (
     FilmStat,
     OutreachEmail,
     ScoreSnapshot,
+    SeedChannel,
     SeedQuery,
 )
 from app.outreach.drafts import (
@@ -199,33 +200,38 @@ def index():
 
 
 def _subqueries(db: Session):
-    """Latest score + peak views per film (avoids N+1)."""
-    latest = (
-        db.query(
-            ScoreSnapshot.film_id.label("fid"),
-            func.max(ScoreSnapshot.captured_at).label("mx"),
-        )
-        .group_by(ScoreSnapshot.film_id)
-        .subquery()
-    )
-    score_sq = (
-        db.query(
-            ScoreSnapshot.film_id.label("fid"),
-            func.max(ScoreSnapshot.total_score).label("total"),
-        )
-        .join(
-            latest,
-            (ScoreSnapshot.film_id == latest.c.fid)
-            & (ScoreSnapshot.captured_at == latest.c.mx),
-        )
-        .group_by(ScoreSnapshot.film_id)
-        .subquery()
-    )
-    views_sq = (
-        db.query(FilmStat.film_id.label("fid"), func.max(FilmStat.views).label("v"))
-        .group_by(FilmStat.film_id)
-        .subquery()
-    )
+    """Latest score + peak views per film, materialized once per request into
+    indexed TEMP tables.
+
+    The home page builds ~30 shelves that each ORDER BY these aggregates.
+    Re-running the GROUP BY over 60k+ snapshot rows per shelf was the page's
+    dominant cost (~140ms each → several seconds total). Doing the aggregation
+    once and joining an indexed temp table makes each shelf nearly free.
+
+    Returns lightweight table handles exposing .c.fid/.c.total/.c.v, so every
+    caller (`outerjoin`, `order_by`) is unchanged. SQLite TEMP tables are
+    per-connection and each request uses one session, so this is request-local;
+    DROP IF EXISTS guards a pooled connection that still holds last request's."""
+    from sqlalchemy import column, table, text
+
+    db.execute(text("DROP TABLE IF EXISTS _heat_score"))
+    db.execute(text("DROP TABLE IF EXISTS _heat_views"))
+    db.execute(text(
+        "CREATE TEMP TABLE _heat_score AS "
+        "SELECT s.film_id AS fid, MAX(s.total_score) AS total "
+        "FROM score_snapshots s JOIN ("
+        " SELECT film_id, MAX(captured_at) AS mx FROM score_snapshots GROUP BY film_id"
+        ") l ON s.film_id = l.film_id AND s.captured_at = l.mx "
+        "GROUP BY s.film_id"
+    ))
+    db.execute(text(
+        "CREATE TEMP TABLE _heat_views AS "
+        "SELECT film_id AS fid, MAX(views) AS v FROM film_stats GROUP BY film_id"
+    ))
+    db.execute(text("CREATE INDEX _heat_score_fid ON _heat_score(fid)"))
+    db.execute(text("CREATE INDEX _heat_views_fid ON _heat_views(fid)"))
+    score_sq = table("_heat_score", column("fid"), column("total"))
+    views_sq = table("_heat_views", column("fid"), column("v"))
     return score_sq, views_sq
 
 
@@ -289,6 +295,34 @@ GENRE_ROW_ORDER = [
 ]
 MIN_ROW_FILMS = 4
 
+# Titles that slip past the classifier but aren't narrative short films —
+# reactions, comedy-clip compilations, facility tours, music videos. Used to
+# keep the curated home showcase clean (SQL ILIKE patterns).
+JUNK_TITLE_PATTERNS = [
+    "watching %", "% reaction%", "% reacts %", "reacting to %",
+    "%best comedy%", "%comedy scenes%", "%comedy seens%", "%comedy compilation%",
+    "%funny clips%", "virtual tour%", "%campus tour%", "%music video%",
+    # TV-serial / stage-play formats (Bengali "natok", Hindi "natak") and
+    # episodic content masquerading as shorts.
+    "%natok%", "%natak%", "%web series%", "%full episode%", "%comedy video%",
+]
+
+
+def _curated_channel_ids(db: Session) -> list[int]:
+    """Channel.id rows for resolved curated seed channels (Omeleto, DUST,
+    ALTER, festival aggregators, animation schools…) — the hand-picked
+    cinematic sources that power the home showcase."""
+    refs = [
+        r for (r,) in db.query(SeedChannel.channel_ref)
+        .filter(SeedChannel.channel_ref.isnot(None)).all()
+    ]
+    if not refs:
+        return []
+    return [
+        c for (c,) in db.query(Channel.id)
+        .filter(Channel.source_channel_id.in_(refs)).all()
+    ]
+
 
 @app.get("/films", response_class=HTMLResponse)
 def films_page(
@@ -327,30 +361,54 @@ def films_page(
             Film.status.in_(("new", "shortlisted")),
             Film.quality_score >= quality_floor,
         )
+        # ---- cinematic curation ----
+        # The home showcase is a curated reel, not raw discovery: restrict it to
+        # hand-picked festival/film-school sources (or films explicitly flagged
+        # award/festival/film-school), and drop the reaction/compilation/tour
+        # clips that slip past the title classifier. Raw discovery still lives
+        # under Browse (/films?...).
+        curated_ids = _curated_channel_ids(db)
+        cinematic_src = [
+            Film.is_award.is_(True),
+            Film.is_festival.is_(True),
+            Film.film_school.is_(True),
+        ]
+        if curated_ids:
+            cinematic_src.insert(0, Film.channel_id.in_(curated_ids))
+        active = active.filter(or_(*cinematic_src))
+        for _pat in JUNK_TITLE_PATTERNS:
+            active = active.filter(~Film.title.ilike(_pat))
+        # Hide dead posters: a 404 thumbnail means the video was deleted/made
+        # private. thumb_ok is backfilled out-of-band — None (unchecked) and
+        # True are shown; only known-dead (False) is excluded.
+        active = active.filter(Film.thumb_ok.isnot(False))
         by_views = views_sq.c.v.desc().nullslast()
         # quality-weighted heat: score first; until the second snapshot lands,
         # professional markers and views break ties
         by_heat = (score_sq.c.total.desc().nullslast(),
                    Film.quality_score.desc(), by_views)
+        # Over-fetch per shelf so the cross-row de-dup below can still fill each
+        # shelf to ROW_LIMIT after pulling shared films out.
+        CAND = ROW_LIMIT * 2
 
         row_defs = [
             ("Trending Now", "/films?status=active&sort=score",
-             active.order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.order_by(*by_heat).limit(CAND).all()),
             ("Festival Films", "/films?status=active&sort=score&festival=1",
-             active.filter(Film.is_festival.is_(True)).order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.filter(Film.is_festival.is_(True)).order_by(*by_heat).limit(CAND).all()),
             ("Award Winners", "/films?status=active&sort=score&award=1",
-             active.filter(Film.is_award.is_(True)).order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.filter(Film.is_award.is_(True)).order_by(*by_heat).limit(CAND).all()),
             ("Animated Short Films", "/animation",
-             active.filter(Film.genre == "animation").order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.filter(Film.genre == "animation").order_by(*by_heat).limit(CAND).all()),
             ("New Discoveries", "/films?status=active&sort=recent",
-             active.order_by(Film.discovered_at.desc()).limit(ROW_LIMIT).all()),
+             active.order_by(Film.discovered_at.desc()).limit(CAND).all()),
             ("Film School Picks", "/films?status=active&sort=score&film_school=1",
-             active.filter(Film.film_school.is_(True)).order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.filter(Film.film_school.is_(True)).order_by(*by_heat).limit(CAND).all()),
             ("Hidden Gems — Small Channels", "/films?status=active&sort=subs",
              active.filter(Channel.subscriber_count.between(1, 25_000))
-             .order_by(*by_heat).limit(ROW_LIMIT).all()),
+             .order_by(*by_heat).limit(CAND).all()),
             ("Under 10 Minutes", "/films?status=active&sort=score&max_minutes=10",
-             active.filter(Film.duration_seconds <= 600).order_by(*by_heat).limit(ROW_LIMIT).all()),
+             active.filter(Film.duration_seconds <= 600).order_by(*by_heat).limit(CAND).all()),
         ]
         # region rows (channel country, with language fallback baked in at ingest)
         region_rows = [("Indian Films", ["IN"])] + [(f"{name} Films" if "Films" not in name else name, codes)
@@ -364,7 +422,7 @@ def films_page(
             ("East & Southeast Asian", REGIONS["East & Southeast Asia"]),
         )]
         for label, codes in region_rows:
-            films = active.filter(Film.country.in_(codes)).order_by(*by_heat).limit(ROW_LIMIT).all()
+            films = active.filter(Film.country.in_(codes)).order_by(*by_heat).limit(CAND).all()
             if len(films) >= MIN_ROW_FILMS:
                 row_defs.append(
                     (label, f"/films?status=active&sort=score&region={codes[0] if len(codes)==1 else label}", films)
@@ -384,7 +442,7 @@ def films_page(
             ch = db.get(Channel, ch_id)
             if ch is None or not ch.name:
                 continue
-            films = active.filter(Film.channel_id == ch_id).order_by(*by_heat).limit(ROW_LIMIT).all()
+            films = active.filter(Film.channel_id == ch_id).order_by(*by_heat).limit(CAND).all()
             if len(films) >= MIN_ROW_FILMS:
                 row_defs.append(
                     (f"From {ch.name}",
@@ -393,7 +451,7 @@ def films_page(
         for g in GENRE_ROW_ORDER:
             if g == "animation":
                 continue  # has its own dedicated row + hub
-            films = active.filter(Film.genre == g).order_by(*by_heat).limit(ROW_LIMIT).all()
+            films = active.filter(Film.genre == g).order_by(*by_heat).limit(CAND).all()
             if len(films) >= MIN_ROW_FILMS:
                 row_defs.append(
                     (f"{g.title()}", f"/films?status=active&sort=views&genre={g}", films)
@@ -410,7 +468,7 @@ def films_page(
             .all()
         )
         for lang, _count in lang_counts:
-            films = active.filter(Film.language == lang).order_by(*by_heat).limit(ROW_LIMIT).all()
+            films = active.filter(Film.language == lang).order_by(*by_heat).limit(CAND).all()
             if len(films) >= MIN_ROW_FILMS:
                 row_defs.append(
                     (f"{lang.title()} Short Films",
@@ -418,22 +476,46 @@ def films_page(
                 )
         row_defs += [
             ("My Shortlist", "/films?status=shortlisted&sort=score",
-             base.filter(Film.status == "shortlisted").order_by(*by_heat).limit(ROW_LIMIT).all()),
+             base.filter(Film.status == "shortlisted").order_by(*by_heat).limit(CAND).all()),
             ("Contacted", "/films?status=contacted&sort=recent",
-             base.filter(Film.status == "contacted").order_by(Film.discovered_at.desc()).limit(ROW_LIMIT).all()),
+             base.filter(Film.status == "contacted").order_by(Film.discovered_at.desc()).limit(CAND).all()),
         ]
 
-        every_film = {f.id: f for _, _, films in row_defs for f in films}
-        vms = _build_view_models(db, list(every_film.values()))
-        max_score = max((r["score"].total_score for r in vms.values() if r["score"]), default=0.0)
-        rows_list = [
-            (title, link, [vms[f.id] for f in films])
-            for title, link, films in row_defs
-            if films
-        ]
+        # ---- marquee hero, chosen by prestige (not virality): the highest-
+        # quality award/festival short, so a merely-viral clip can't headline.
+        all_cands = {f.id: f for _, _, films in row_defs for f in films}
+        award_fest = [f for f in all_cands.values() if f.is_award or f.is_festival]
+        award_fest.sort(key=lambda f: (f.is_award, f.is_festival, f.quality_score, f.id),
+                        reverse=True)
         trending = row_defs[0][2]
-        with_poster = [f for f in trending if f.thumbnail_url] or trending
-        billboard = vms[with_poster[0].id] if with_poster else None
+        billboard_film = (award_fest[0] if award_fest
+                          else (trending[0] if trending else None))
+
+        # ---- cross-row de-dup: every film appears in exactly one shelf (its
+        # highest-priority one) and never repeats the billboard. ----
+        seen = {billboard_film.id} if billboard_film else set()
+        deduped = []
+        for title, link, films in row_defs:
+            picks = []
+            for f in films:
+                if f.id in seen:
+                    continue
+                seen.add(f.id)
+                picks.append(f)
+                if len(picks) >= ROW_LIMIT:
+                    break
+            if len(picks) >= MIN_ROW_FILMS or (
+                    title in ("My Shortlist", "Contacted") and picks):
+                deduped.append((title, link, picks))
+
+        render = {f.id: f for _, _, films in deduped for f in films}
+        if billboard_film:
+            render[billboard_film.id] = billboard_film
+        vms = _build_view_models(db, list(render.values()))
+        max_score = max((r["score"].total_score for r in vms.values() if r["score"]), default=0.0)
+        rows_list = [(title, link, [vms[f.id] for f in films])
+                     for title, link, films in deduped]
+        billboard = vms[billboard_film.id] if billboard_film else None
         return templates.TemplateResponse(
             request,
             "films.html",

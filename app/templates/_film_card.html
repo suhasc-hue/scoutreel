@@ -1,8 +1,13 @@
 <div class="fcard" id="film-card-{{ r.film.id }}">
   <div class="tile">
     {% if r.film.thumbnail_url %}
-      <img src="{{ r.film.thumbnail_url | yt_thumb('hq') }}" alt="" loading="lazy"
-           onerror="this.onerror=null;this.src='{{ r.film.thumbnail_url }}'">
+      <img src="{{ r.film.thumbnail_url | yt_thumb('mq') }}" alt="" loading="lazy"
+           onerror="thumbFallback(this)">
+      <div class="ph" style="display:none;background:linear-gradient(135deg,
+           hsl({{ (r.film.id * 67) % 360 }},42%,24%),
+           hsl({{ (r.film.id * 67 + 50) % 360 }},48%,11%))">
+        <span>{{ r.film.title[:1] | upper }}</span>
+      </div>
     {% else %}
       <div class="ph" style="background:linear-gradient(135deg,
            hsl({{ (r.film.id * 67) % 360 }},42%,24%),
