@@ -51,6 +51,8 @@
   <div class="page-top"></div>
   {% endif %}
 
+  {% if hub_subtitle %}<div class="hub-sub">{{ hub_subtitle }}</div>{% endif %}
+
   {% if rows_list %}
     {% for title, link, cards in rows_list %}
     <div class="nrow">

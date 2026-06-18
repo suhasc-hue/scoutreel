@@ -358,6 +358,21 @@ ADULT_TITLE_PATTERNS = [
     "%तूफानी रात%", "%सुहागरात%", "%बेगुन थेरापी%",
 ]
 
+# Elite, reliably-premium sources: every upload is a hand-picked festival
+# short or top film-school graduation film. These define the Premium tier
+# (alongside award/festival/film-school flags). TheCGBros is excluded — it is
+# mostly VFX breakdowns/showreels rather than finished films.
+ELITE_PREMIUM_CHANNELS = [
+    "Omeleto", "DUST", "ALTER", "Short of the Week", "Film Shortage",
+    "NoBudge", "nobudge", "Viddsee", "GOBELINS Paris", "ESMA Movies",
+    "Filmakademie", "The Animation Workshop", "Large Short Films", "CGMeetup",
+]
+# Kept out of the Premium tier even from elite channels — not finished films.
+PREMIUM_EXCLUDE = [
+    "%breakdown%", "%showreel%", "%show reel%", "%demo reel%", "%making of%",
+    "%making-of%", "%tutorial%", "%vfx reel%", "%shot progression%",
+]
+
 
 def _curated_channel_ids(db: Session) -> list[int]:
     """Channel.id rows for resolved curated seed channels (Omeleto, DUST,
@@ -374,6 +389,28 @@ def _curated_channel_ids(db: Session) -> list[int]:
         c for (c,) in db.query(Channel.id)
         .filter(Channel.source_channel_id.in_(refs)).all()
     ]
+
+
+def _premium_channel_ids(db: Session) -> list[int]:
+    """Channel.id rows for the elite premium aggregators / top schools."""
+    return [
+        c for (c,) in db.query(Channel.id)
+        .filter(Channel.name.in_(ELITE_PREMIUM_CHANNELS)).all()
+    ]
+
+
+def _premium_filter(q, db: Session):
+    """Narrow an active-films query to the Premium tier: elite-aggregator OR
+    award/festival/film-school, minus breakdowns/reels/tutorials."""
+    elite = _premium_channel_ids(db)
+    sigs = [Film.is_award.is_(True), Film.is_festival.is_(True),
+            Film.film_school.is_(True)]
+    if elite:
+        sigs.insert(0, Film.channel_id.in_(elite))
+    q = q.filter(or_(*sigs))
+    for _pat in PREMIUM_EXCLUDE:
+        q = q.filter(~Film.title.ilike(_pat))
+    return q
 
 
 @app.get("/films", response_class=HTMLResponse)
@@ -447,6 +484,9 @@ def films_page(
         CAND = ROW_LIMIT * 2
 
         row_defs = [
+            ("Premium Films", "/premium",
+             _premium_filter(base.filter(Film.status.in_(("new", "shortlisted"))), db)
+             .order_by(Film.quality_score.desc(), *by_heat).limit(CAND).all()),
             ("Trending Now", "/films?status=active&sort=score",
              active.order_by(*by_heat).limit(CAND).all()),
             ("Festival Films", "/films?status=active&sort=score&festival=1",
@@ -758,6 +798,62 @@ def ai_page(request: Request, db: Session = Depends(get_db)):
         request, "films.html",
         {"view": "home", "rows_list": rows_list, "billboard": billboard,
          "max_score": max_score, "active_page": "ai", "rank_label": "Top in AI Films"},
+    )
+
+
+@app.get("/premium", response_class=HTMLResponse)
+def premium_page(request: Request, db: Session = Depends(get_db)):
+    """Curated Premium catalogue — hand-picked festival aggregators (Omeleto,
+    DUST, ALTER, Short of the Week, NoBudge…), award winners, festival
+    selections and top film-school films."""
+    score_sq, views_sq = _subqueries(db)
+    base = (
+        db.query(Film)
+        .options(joinedload(Film.channel))
+        .outerjoin(score_sq, Film.id == score_sq.c.fid)
+        .outerjoin(views_sq, Film.id == views_sq.c.fid)
+        .join(Channel, Film.channel_id == Channel.id)
+        .filter(Film.status.in_(("new", "shortlisted")))
+    )
+    for _pat in ADULT_TITLE_PATTERNS:
+        base = base.filter(~Film.title.ilike(_pat))
+    pool = _premium_filter(base, db)
+    total = pool.count()
+    by_best = (Film.quality_score.desc(), score_sq.c.total.desc().nullslast(),
+               views_sq.c.v.desc().nullslast())
+
+    def src(*names):
+        return pool.filter(Channel.name.in_(names))
+
+    row_defs = [
+        ("Top Rated", "/premium", pool.order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Award Winners", "/films?status=active&sort=score&award=1",
+         pool.filter(Film.is_award.is_(True)).order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Festival Selections", "/films?status=active&sort=score&festival=1",
+         pool.filter(Film.is_festival.is_(True)).order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Omeleto — Festival Shorts", "/premium", src("Omeleto").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("DUST — Sci-Fi Shorts", "/premium", src("DUST").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("ALTER — Horror Shorts", "/premium", src("ALTER").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Short of the Week", "/premium", src("Short of the Week").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("NoBudge — Indie Shorts", "/premium", src("NoBudge", "nobudge").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Viddsee — Asian Shorts", "/premium", src("Viddsee").order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Film School Standouts", "/films?status=active&sort=score&film_school=1",
+         pool.filter(Film.film_school.is_(True)).order_by(*by_best).limit(ROW_LIMIT).all()),
+        ("Animation Schools — Gobelins & ESMA", "/premium",
+         src("GOBELINS Paris", "ESMA Movies").order_by(*by_best).limit(ROW_LIMIT).all()),
+    ]
+    every_film = {f.id: f for _, _, films in row_defs for f in films}
+    vms = _build_view_models(db, list(every_film.values()))
+    max_score = max((r["score"].total_score for r in vms.values() if r["score"]), default=0.0)
+    rows_list = [(t, l, [vms[f.id] for f in films]) for t, l, films in row_defs if films]
+    ranked = pool.order_by(*by_best).limit(ROW_LIMIT).all()
+    with_poster = [f for f in ranked if f.thumbnail_url] or ranked
+    billboard = vms[with_poster[0].id] if with_poster and with_poster[0].id in vms else None
+    return templates.TemplateResponse(
+        request, "films.html",
+        {"view": "home", "rows_list": rows_list, "billboard": billboard,
+         "max_score": max_score, "active_page": "premium", "rank_label": "Premium Catalogue",
+         "hub_subtitle": f"{total:,} hand-picked premium films — festival selections, award winners & film-school standouts"},
     )
 
 
