@@ -78,6 +78,11 @@ class Film(Base):
     quality_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     is_festival: Mapped[bool] = mapped_column(Boolean, default=False)
     is_award: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Verified by the AI-curation pass: a genuine AI-generated short film
+    # (not a course/tutorial/breakdown, not a conventionally-shot film merely
+    # about AI). Drives the curated /ai hub. ai_tier: 0 none, 1..5 premium rank.
+    is_ai_film: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    ai_tier: Mapped[int] = mapped_column(Integer, default=0)
     # new|shortlisted|rejected|contacted
     status: Mapped[str] = mapped_column(String(16), default="new", index=True)
 
