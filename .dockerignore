@@ -1,0 +1,23 @@
+# keep the image small and free of secrets / the private live DB
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+# secrets & private data — never ship these
+.env
+.env.example
+credentials.json
+token.json
+tokens/
+backups/
+# the full live DB has private contact data; the deploy uses data/library.db
+scoutreel.db
+scoutreel.db-wal
+scoutreel.db-shm
+# local logs / cloudflared artifacts
+build_log.txt
+build_err.txt
+*.log

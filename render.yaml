@@ -1,0 +1,20 @@
+# Render Blueprint. On render.com: New + → Blueprint → connect this repo.
+# Render reads this file and creates the web service automatically.
+services:
+  - type: web
+    name: scoutreel
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: false
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Use the bundled, sanitized public library (no private contact data).
+      - key: DATABASE_URL
+        value: sqlite:////app/data/library.db
+      # OPTIONAL: set a value in the Render dashboard to password-protect the
+      # whole site (HTTP Basic auth; any username, password = this value).
+      # Leave unset to make the site fully public.
+      - key: SITE_PASSWORD
+        sync: false

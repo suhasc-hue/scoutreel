@@ -5,8 +5,11 @@ explicit dashboard click, and every send passes guardrails.assert_can_send.
 Sends are additionally serialized by a process-wide lock plus an atomic
 status claim (approved -> sending) so a double click can never double-send.
 """
+import base64
 import bisect
+import os
 import re
+import secrets
 import threading
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -91,6 +94,31 @@ def yt_thumb(url: str, quality: str = "hq") -> str:
 
 templates.env.filters["compact"] = compact_number
 templates.env.filters["yt_thumb"] = yt_thumb
+
+
+SITE_PASSWORD = os.environ.get("SITE_PASSWORD", "")
+
+
+@app.middleware("http")
+async def optional_basic_auth(request: Request, call_next):
+    """When SITE_PASSWORD is set (e.g. on a public Render deploy), gate the
+    entire site behind HTTP Basic auth — any username, password = SITE_PASSWORD.
+    Unset (local run / tunnel) → no-op, so this never affects local use."""
+    if SITE_PASSWORD:
+        header = request.headers.get("authorization", "")
+        ok = False
+        if header.startswith("Basic "):
+            try:
+                _, pw = base64.b64decode(header[6:]).decode("utf-8").split(":", 1)
+                ok = secrets.compare_digest(pw, SITE_PASSWORD)
+            except Exception:
+                ok = False
+        if not ok:
+            return PlainTextResponse(
+                "Authentication required", status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="ScoutReel"'},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
