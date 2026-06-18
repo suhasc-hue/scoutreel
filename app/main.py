@@ -332,7 +332,30 @@ JUNK_TITLE_PATTERNS = [
     "%funny clips%", "virtual tour%", "%campus tour%", "%music video%",
     # TV-serial / stage-play formats (Bengali "natok", Hindi "natak") and
     # episodic content masquerading as shorts.
-    "%natok%", "%natak%", "%web series%", "%full episode%", "%comedy video%",
+    "%natok%", "%natak%", "%নাটক%", "%नाटक%", "%web series%",
+    "%full episode%", "%comedy video%",
+]
+
+# Adult / sexual content — never show it anywhere (kept entirely out of the
+# library at query time, and the offending titles are also rejected outright).
+# Errs toward over-blocking: this is a public, all-ages film showcase.
+ADULT_TITLE_PATTERNS = [
+    "%hot short%", "%hot bengali%", "%hot romantic%", "%hot web%",
+    "%new hot%", "%hot uncut%", "%uncut%", "%hot scene%", "%bed scene%",
+    "%b-grade%", "%bgrade%", "%call girl%", "%callgirl%", "%rape%",
+    "%sex%", "%xxx%", "%18+%", "%adults only%", "%adult film%", "%nude%",
+    "%nudity%", "%erotic%", "%seduc%", "%lust%", "%wife swap%", "%swapping%",
+    "%aunty romance%", "%boudi romance%", "%vyabhichar%", "%wife exchange%",
+    # "hot <relative/neighbour/maid>" soft-porn clickbait
+    "%hot padosan%", "%hot bhabhi%", "%hot boudi%", "%hot aunty%",
+    "%hot gwadan%", "%hot wife%", "%hot maid%", "%hot girl%", "%bhabhi ji ka%",
+    "%boudi enjoy%",
+    # Bengali script terms recurring on the offending soft-porn channels
+    "%যৌবন%", "%কল গার্ল%", "%দেহ সুখ%", "%পরকীয়া%", "%শরীরের চাহিদা%",
+    "%বেগুন থেরাপী%",
+    # Hindi/Punjabi soft-porn clickbait phrases
+    "%अदला-बदली%", "%अदला बदली%", "%जो एक बार देखेगा%", "%होश उड़%",
+    "%तूफानी रात%", "%सुहागरात%", "%बेगुन थेरापी%",
 ]
 
 
@@ -342,7 +365,8 @@ def _curated_channel_ids(db: Session) -> list[int]:
     cinematic sources that power the home showcase."""
     refs = [
         r for (r,) in db.query(SeedChannel.channel_ref)
-        .filter(SeedChannel.channel_ref.isnot(None)).all()
+        .filter(SeedChannel.channel_ref.isnot(None),
+                SeedChannel.enabled.is_(True)).all()
     ]
     if not refs:
         return []
@@ -371,6 +395,9 @@ def films_page(
         .outerjoin(views_sq, Film.id == views_sq.c.fid)
         .join(Channel, Film.channel_id == Channel.id)
     )
+    # Adult/sexual content is excluded everywhere — home and browse alike.
+    for _pat in ADULT_TITLE_PATTERNS:
+        base = base.filter(~Film.title.ilike(_pat))
 
     browse = any(
         p in request.query_params
@@ -640,6 +667,8 @@ def animation_page(request: Request, db: Session = Depends(get_db)):
         .join(Channel, Film.channel_id == Channel.id)
         .filter(Film.status.in_(("new", "shortlisted")), Film.genre == "animation")
     )
+    for _pat in ADULT_TITLE_PATTERNS:
+        base = base.filter(~Film.title.ilike(_pat))
     by_heat = (score_sq.c.total.desc().nullslast(),
                Film.quality_score.desc(), views_sq.c.v.desc().nullslast())
 

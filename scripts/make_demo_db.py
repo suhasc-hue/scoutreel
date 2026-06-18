@@ -44,6 +44,12 @@ def main() -> None:
             cur.execute(f"DELETE FROM {t}")
         except sqlite3.OperationalError:
             pass  # table may not exist in older DBs
+    # never ship rejected films (adult/junk) to the public site
+    cur.execute("DELETE FROM film_stats WHERE film_id IN "
+                "(SELECT id FROM films WHERE status='rejected')")
+    cur.execute("DELETE FROM score_snapshots WHERE film_id IN "
+                "(SELECT id FROM films WHERE status='rejected')")
+    cur.execute("DELETE FROM films WHERE status='rejected'")
     # thin time-series to the latest row per film
     cur.execute("DELETE FROM film_stats WHERE id NOT IN "
                 "(SELECT MAX(id) FROM film_stats GROUP BY film_id)")
