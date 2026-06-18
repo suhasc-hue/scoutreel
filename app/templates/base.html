@@ -294,9 +294,10 @@
 <body>
 <nav id="topnav">
   <a class="logo" href="/films">ScoutReel</a>
-  <a href="/films" class="navlink {{ 'active' if active == 'films' and active_page != 'animation' else '' }}">Home</a>
+  <a href="/films" class="navlink {{ 'active' if active == 'films' and active_page not in ('animation', 'ai') else '' }}">Home</a>
   <a href="/films?status=active&sort=score" class="navlink">Browse</a>
   <a href="/animation" class="navlink {{ 'active' if active_page == 'animation' else '' }}">Animation</a>
+  <a href="/ai" class="navlink {{ 'active' if active_page == 'ai' else '' }}">AI Films</a>
   <a href="/filmmakers" class="navlink {{ 'active' if active == 'filmmakers' else '' }}">Filmmakers</a>
   <a href="/inbox" class="navlink {{ 'active' if active == 'inbox' else '' }}">Inbox</a>
   <a href="/outbox" class="navlink {{ 'active' if active == 'outbox' else '' }}">Outbox</a>

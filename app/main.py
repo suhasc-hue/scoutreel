@@ -358,6 +358,18 @@ ADULT_TITLE_PATTERNS = [
     "%तूफानी रात%", "%सुहागरात%", "%बेगुन थेरापी%",
 ]
 
+# AI-generated film markers (matched in title OR description). Drives the
+# dedicated /ai hub and the "AI Films" home shelf.
+AI_FILM_LIKE = [
+    "%ai film%", "%ai short%", "%ai-generated%", "%ai generated%",
+    "%made with ai%", "%generative ai%", "%ai sci-fi%", "%ai scifi%",
+    "%ai dystop%", "%ai anime%", "%ai animated%", "%ai movie%",
+    "%cinematic ai%", "%ai cinematic%", "%a.i. short%", "%openai sora%",
+    "%sora ai%", "%runwayml%", "% runway gen%", "%midjourney%", "%kling ai%",
+    "%pika labs%", "%stable diffusion%", "%luma dream%", "%google veo%",
+    "%veo 3%", "%veo3%", "%text-to-video%", "%text to video%",
+]
+
 
 def _curated_channel_ids(db: Session) -> list[int]:
     """Channel.id rows for resolved curated seed channels (Omeleto, DUST,
@@ -455,6 +467,12 @@ def films_page(
              active.filter(Film.is_award.is_(True)).order_by(*by_heat).limit(CAND).all()),
             ("Animated Short Films", "/animation",
              active.filter(Film.genre == "animation").order_by(*by_heat).limit(CAND).all()),
+            ("AI Films", "/ai",
+             base.filter(Film.status.in_(("new", "shortlisted")),
+                         Film.quality_score >= quality_floor,
+                         or_(*[Film.title.ilike(p) | Film.description.ilike(p)
+                               for p in AI_FILM_LIKE]))
+             .order_by(*by_heat).limit(CAND).all()),
             ("New Discoveries", "/films?status=active&sort=recent",
              active.order_by(Film.discovered_at.desc()).limit(CAND).all()),
             ("Film School Picks", "/films?status=active&sort=score&film_school=1",
@@ -706,6 +724,55 @@ def animation_page(request: Request, db: Session = Depends(get_db)):
         {"view": "home", "rows_list": rows_list, "billboard": billboard,
          "max_score": max_score, "active_page": "animation",
          "rank_label": "Top in Animation"},
+    )
+
+
+@app.get("/ai", response_class=HTMLResponse)
+def ai_page(request: Request, db: Session = Depends(get_db)):
+    """Dedicated AI-generated film hub — films made with generative AI tools."""
+    score_sq, views_sq = _subqueries(db)
+    base = (
+        db.query(Film)
+        .options(joinedload(Film.channel))
+        .outerjoin(score_sq, Film.id == score_sq.c.fid)
+        .outerjoin(views_sq, Film.id == views_sq.c.fid)
+        .join(Channel, Film.channel_id == Channel.id)
+        .filter(Film.status.in_(("new", "shortlisted")))
+        .filter(or_(*[Film.title.ilike(p) | Film.description.ilike(p)
+                      for p in AI_FILM_LIKE]))
+    )
+    for _pat in ADULT_TITLE_PATTERNS:
+        base = base.filter(~Film.title.ilike(_pat))
+    by_heat = (score_sq.c.total.desc().nullslast(),
+               Film.quality_score.desc(), views_sq.c.v.desc().nullslast())
+
+    def kw(*words):
+        return base.filter(
+            or_(*[Film.title.ilike(f"%{w}%") | Film.description.ilike(f"%{w}%") for w in words])
+        )
+
+    row_defs = [
+        ("All AI Films", "/ai", base.order_by(*by_heat).limit(ROW_LIMIT).all()),
+        ("AI Sci-Fi & Dystopian", "/ai",
+         kw("sci-fi", "scifi", "dystop", "cyberpunk", "future", "robot").order_by(*by_heat).limit(ROW_LIMIT).all()),
+        ("AI Animation", "/ai",
+         kw("animation", "animated", "anime").order_by(*by_heat).limit(ROW_LIMIT).all()),
+        ("Cinematic AI", "/ai",
+         kw("cinematic", "epic", "trailer", "teaser").order_by(*by_heat).limit(ROW_LIMIT).all()),
+        ("Award-Winning AI", "/ai",
+         base.filter(Film.is_award.is_(True)).order_by(*by_heat).limit(ROW_LIMIT).all()),
+    ]
+    every_film = {f.id: f for _, _, films in row_defs for f in films}
+    vms = _build_view_models(db, list(every_film.values()))
+    max_score = max((r["score"].total_score for r in vms.values() if r["score"]), default=0.0)
+    rows_list = [(t, l, [vms[f.id] for f in films]) for t, l, films in row_defs if films]
+    first = row_defs[0][2]
+    with_poster = [f for f in first if f.thumbnail_url] or first
+    billboard = vms[with_poster[0].id] if with_poster else None
+    return templates.TemplateResponse(
+        request, "films.html",
+        {"view": "home", "rows_list": rows_list, "billboard": billboard,
+         "max_score": max_score, "active_page": "ai", "rank_label": "Top in AI Films"},
     )
 
 
