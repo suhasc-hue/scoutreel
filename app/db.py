@@ -3,6 +3,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 
@@ -15,7 +16,14 @@ def _make_engine(url: str | None = None):
     url = url or get_settings().database_url
     kwargs = {}
     if url.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # NullPool: open/close a fresh connection per checkout instead of a
+        # bounded QueuePool. SQLite connections are cheap, and this avoids
+        # "QueuePool limit reached" timeouts when many slow requests run
+        # concurrently (e.g. behind a weak host's health-check pings). It also
+        # suits the per-request TEMP tables in _subqueries (each connection is
+        # fresh). `timeout` sets SQLite's busy-timeout so writers wait, not fail.
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        kwargs["poolclass"] = NullPool
     return create_engine(url, **kwargs)
 
 
