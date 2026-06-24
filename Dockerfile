@@ -19,7 +19,7 @@ COPY . .
 # Pre-render the heavy showcase pages to static HTML on the (fast) build CPU,
 # baked into the image. The tiny runtime instance then serves them instantly
 # instead of rebuilding 29 shelves per request.
-RUN DATABASE_URL=sqlite:////app/data/library.db python scripts/prerender.py
+RUN DATABASE_URL=sqlite:////app/data/library.db PYTHONPATH=/app python scripts/prerender.py
 
 # Render injects $PORT; default 8000 for a local `docker run`.
 EXPOSE 8000
