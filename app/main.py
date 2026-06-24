@@ -96,6 +96,36 @@ templates.env.filters["compact"] = compact_number
 templates.env.filters["yt_thumb"] = yt_thumb
 
 
+# In-memory cache for the heavy, read-only showcase pages. The deployed library
+# is static, so caching the rendered HTML for a few minutes turns the expensive
+# home/hub builds into instant responses after the first hit — essential on a
+# small/slow instance.
+_PAGE_CACHE: dict[str, tuple[float, bytes]] = {}
+_PAGE_CACHE_TTL = 600.0  # seconds
+_CACHEABLE_PATHS = {"/films", "/premium", "/ai", "/animation"}
+
+
+@app.middleware("http")
+async def cache_showcase_pages(request: Request, call_next):
+    import time as _t
+
+    key = request.url.path
+    cacheable = (request.method == "GET" and key in _CACHEABLE_PATHS
+                 and not request.url.query)
+    if cacheable:
+        hit = _PAGE_CACHE.get(key)
+        if hit and hit[0] > _t.monotonic():
+            return HTMLResponse(content=hit[1])
+    response = await call_next(request)
+    if cacheable and getattr(response, "status_code", None) == 200:
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        _PAGE_CACHE[key] = (_t.monotonic() + _PAGE_CACHE_TTL, body)
+        return HTMLResponse(content=body)
+    return response
+
+
 SITE_PASSWORD = os.environ.get("SITE_PASSWORD", "")
 
 
