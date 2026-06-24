@@ -16,6 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # secrets, venv, tests — see that file)
 COPY . .
 
+# Pre-render the heavy showcase pages to static HTML on the (fast) build CPU,
+# baked into the image. The tiny runtime instance then serves them instantly
+# instead of rebuilding 29 shelves per request.
+RUN DATABASE_URL=sqlite:////app/data/library.db python scripts/prerender.py
+
 # Render injects $PORT; default 8000 for a local `docker run`.
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

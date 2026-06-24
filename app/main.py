@@ -65,7 +65,21 @@ async def lifespan(_app: FastAPI):
     init_db()
     with session_scope() as db:
         ensure_seed_queries(db)
+    _load_prerendered()
     yield
+
+
+def _load_prerendered() -> None:
+    """Seed the page cache from build-time prerendered HTML (if present) so the
+    heavy showcase pages are instant on tiny instances and survive spin-downs."""
+    import time as _t
+
+    pre = Path(__file__).parent / "prerendered"
+    for key, path in {"films": "/films", "premium": "/premium",
+                      "ai": "/ai", "animation": "/animation"}.items():
+        f = pre / f"{key}.html"
+        if f.exists():
+            _PAGE_CACHE[path] = (_t.monotonic() + 10 ** 9, f.read_bytes())
 
 
 app = FastAPI(title="ScoutReel", lifespan=lifespan)

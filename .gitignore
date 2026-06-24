@@ -10,3 +10,10 @@ tokens/
 backups/
 build_log.txt
 build_err.txt
+# build artifacts (generated at Docker build by scripts/prerender.py)
+app/prerendered/
+# local ops (machine-specific, not for the deploy repo)
+serve_watchdog.ps1
+serve_out.log
+serve_err.log
+*.log
